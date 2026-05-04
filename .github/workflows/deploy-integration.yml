@@ -1,4 +1,4 @@
-name: Deploy backend integration
+name: integration
 
 on:
   push:
@@ -21,6 +21,8 @@ env:
   SMTP_HOST: ${{ vars.SMTP_HOST }}
   SMTP_FROM: ${{ vars.SMTP_FROM }}
   IMAGE_NAME: backend/api
+  IMAGE_ENVIRONMENT: integration
+  IMAGE_VERSION: 1.0.0
 
 jobs:
   deploy:
@@ -97,12 +99,29 @@ jobs:
 
       - name: Build image
         run: |
-          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${IMAGE_NAME}:${GITHUB_SHA}"
-          docker build -t "${IMAGE_URI}" .
-          echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
+          IMAGE_BASE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${ARTIFACT_REPOSITORY}/${IMAGE_NAME}"
+          IMAGE_URI_ENVIRONMENT="${IMAGE_BASE_URI}:${IMAGE_ENVIRONMENT}"
+          IMAGE_URI_VERSION="${IMAGE_BASE_URI}:${IMAGE_VERSION}"
+          IMAGE_URI_RELEASE="${IMAGE_BASE_URI}:${IMAGE_ENVIRONMENT}-${IMAGE_VERSION}"
+
+          docker build \
+            -t "${IMAGE_URI_ENVIRONMENT}" \
+            -t "${IMAGE_URI_VERSION}" \
+            -t "${IMAGE_URI_RELEASE}" \
+            .
+
+          {
+            echo "IMAGE_URI=${IMAGE_URI_RELEASE}"
+            echo "IMAGE_URI_ENVIRONMENT=${IMAGE_URI_ENVIRONMENT}"
+            echo "IMAGE_URI_VERSION=${IMAGE_URI_VERSION}"
+            echo "IMAGE_URI_RELEASE=${IMAGE_URI_RELEASE}"
+          } >> "$GITHUB_ENV"
 
       - name: Push image
-        run: docker push "${IMAGE_URI}"
+        run: |
+          docker push "${IMAGE_URI_ENVIRONMENT}"
+          docker push "${IMAGE_URI_VERSION}"
+          docker push "${IMAGE_URI_RELEASE}"
 
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v3
