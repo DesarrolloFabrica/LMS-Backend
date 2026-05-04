@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException } from "@nestjs/common";
+import { Injectable, Logger, UnauthorizedException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { OAuth2Client } from "google-auth-library";
@@ -8,6 +8,7 @@ import { UsersService } from "@/users/users.service";
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly oauthClient: OAuth2Client;
 
   constructor(
@@ -15,14 +16,11 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly usersService: UsersService,
   ) {
-    this.oauthClient = new OAuth2Client(this.config.get<string>("google.clientId"));
+    this.oauthClient = new OAuth2Client(this.config.getOrThrow<string>("google.clientId"));
   }
 
   async loginWithGoogle(credential: string) {
-    const clientId = this.config.get<string>("google.clientId");
-    if (!clientId) {
-      throw new UnauthorizedException("Google client id is not configured");
-    }
+    const clientId = this.config.getOrThrow<string>("google.clientId");
 
     const ticket = await this.oauthClient.verifyIdToken({
       idToken: credential,
@@ -44,9 +42,11 @@ export class AuthService {
     });
 
     if (!user.isActive) {
+      this.logger.warn(`Inactive user blocked during Google login: userId=${user.id} email=${user.email}`);
       throw new UnauthorizedException("User is inactive");
     }
 
+    this.logger.log(`Google login completed: userId=${user.id} role=${user.role} domain=${user.email.split("@")[1]}`);
     return this.buildSession(user);
   }
 
@@ -62,7 +62,7 @@ export class AuthService {
     return {
       accessToken: await this.jwtService.signAsync(payload),
       tokenType: "Cookie",
-      expiresIn: this.config.get<string>("jwt.expiresIn") ?? "4h",
+      expiresIn: this.config.getOrThrow<string>("jwt.expiresIn"),
       user: this.usersService.toPublicUser(user),
     };
   }
@@ -70,9 +70,11 @@ export class AuthService {
   async refreshSession(authUser: AuthUser) {
     const user = await this.usersService.findById(authUser.sub);
     if (!user.isActive) {
+      this.logger.warn(`Inactive user blocked during session refresh: userId=${user.id}`);
       throw new UnauthorizedException("User is inactive");
     }
 
+    this.logger.log(`Session refreshed: userId=${user.id} role=${user.role}`);
     return this.buildSession(user);
   }
 
@@ -87,6 +89,7 @@ export class AuthService {
     const tokenDomain = hostedDomain?.toLowerCase();
 
     if (emailDomain !== normalized && tokenDomain !== normalized) {
+      this.logger.warn(`Google domain rejected: emailDomain=${emailDomain ?? "unknown"} hostedDomain=${tokenDomain ?? "none"}`);
       throw new UnauthorizedException("Google account domain is not allowed");
     }
   }

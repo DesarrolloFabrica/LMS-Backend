@@ -1,60 +1,67 @@
 export default () => ({
-  nodeEnv: process.env.NODE_ENV ?? "development",
-  port: Number(process.env.PORT ?? 3000),
+  nodeEnv: requiredEnv("NODE_ENV"),
+  port: parseNumber("PORT"),
   database: {
-    host: process.env.DB_HOST ?? "localhost",
-    port: Number(process.env.DB_PORT ?? 5432),
-    name: process.env.DB_NAME ?? "control_lms",
-    user: process.env.DB_USER ?? "postgres",
-    password: process.env.DB_PASSWORD ?? "postgres",
-    ssl: parseBoolean(process.env.DB_SSL),
-    logging: parseBoolean(process.env.DB_LOGGING),
-    sync: parseBoolean(process.env.DB_SYNC),
+    host: requiredEnv("DB_HOST"),
+    port: parseNumber("DB_PORT"),
+    name: requiredEnv("DB_NAME"),
+    user: requiredEnv("DB_USER"),
+    password: requiredEnv("DB_PASSWORD"),
+    ssl: parseBoolean("DB_SSL"),
+    logging: parseBoolean("DB_LOGGING"),
+    sync: parseBoolean("DB_SYNC"),
   },
   jwt: {
-    secret: process.env.JWT_SECRET ?? "change_me",
-    expiresIn: process.env.JWT_EXPIRES_IN ?? "4h",
+    secret: requiredEnv("JWT_SECRET"),
+    expiresIn: requiredEnv("JWT_EXPIRES_IN"),
   },
   session: {
-    cookieName: process.env.SESSION_COOKIE_NAME ?? "carga_lms_session",
-    cookieSecure: process.env.SESSION_COOKIE_SECURE
-      ? parseBoolean(process.env.SESSION_COOKIE_SECURE)
-      : (process.env.NODE_ENV ?? "development") === "production",
-    cookieSameSite: process.env.SESSION_COOKIE_SAME_SITE ?? "lax",
+    cookieName: requiredEnv("SESSION_COOKIE_NAME"),
+    cookieSecure: parseBoolean("SESSION_COOKIE_SECURE"),
+    cookieSameSite: requiredEnv("SESSION_COOKIE_SAME_SITE"),
   },
   google: {
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    allowedDomain: process.env.GOOGLE_ALLOWED_DOMAIN,
-  },
-  bootstrapRoles: {
-    defaultRole: process.env.DEFAULT_USER_ROLE,
-    adminEmails: splitEnvList(process.env.INITIAL_ADMIN_EMAILS),
-    lmsEmails: splitEnvList(process.env.INITIAL_LMS_EMAILS),
+    clientId: requiredEnv("GOOGLE_CLIENT_ID"),
+    allowedDomain: optionalEnv("GOOGLE_ALLOWED_DOMAIN"),
   },
   notifications: {
-    lmsEmail: process.env.LMS_NOTIFICATION_EMAIL ?? "lms@cun.edu.co",
-    appBaseUrl: process.env.APP_BASE_URL ?? "http://localhost:5173",
+    lmsEmail: requiredEnv("LMS_NOTIFICATION_EMAIL"),
+    appBaseUrl: requiredEnv("APP_BASE_URL"),
     smtpHost: optionalEnv("SMTP_HOST"),
-    smtpPort: Number(optionalEnv("SMTP_PORT") ?? 587),
-    smtpSecure: parseBoolean(process.env.SMTP_SECURE),
-    smtpUser: optionalEnv("SMTP_USER"),
-    smtpPass: optionalEnv("SMTP_PASS"),
-    smtpFrom: optionalEnv("SMTP_FROM") ?? optionalEnv("SMTP_USER"),
+    smtpPort: parseNumber("SMTP_PORT"),
+    smtpSecure: parseBoolean("SMTP_SECURE"),
+    smtpUser: requiredEnv("SMTP_USER"),
+    smtpPass: requiredEnv("SMTP_PASS"),
+    smtpFrom: optionalEnv("SMTP_FROM"),
   },
 });
 
-function parseBoolean(value?: string) {
-  return value?.trim().toLowerCase() === "true";
-}
-
-function splitEnvList(value?: string) {
-  return (value ?? "")
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
+function requiredEnv(key: string) {
+  const value = process.env[key]?.trim();
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value;
 }
 
 function optionalEnv(key: string) {
   const value = process.env[key]?.trim();
   return value ? value : undefined;
+}
+
+function parseNumber(key: string) {
+  const raw = requiredEnv(key);
+  const value = Number(raw);
+  if (Number.isNaN(value)) {
+    throw new Error(`Environment variable ${key} must be a valid number.`);
+  }
+  return value;
+}
+
+function parseBoolean(key: string) {
+  const raw = requiredEnv(key).toLowerCase();
+  if (raw !== "true" && raw !== "false") {
+    throw new Error(`Environment variable ${key} must be "true" or "false".`);
+  }
+  return raw === "true";
 }

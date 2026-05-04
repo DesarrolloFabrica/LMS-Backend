@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectModel } from "@nestjs/sequelize";
 import { col, fn, literal, Op, Transaction, WhereOptions } from "sequelize";
 import { Sequelize } from "sequelize-typescript";
@@ -38,6 +38,8 @@ const VALID_TRANSITIONS: Record<SubjectStatus, SubjectStatus[]> = {
 
 @Injectable()
 export class MateriasService {
+  private readonly logger = new Logger(MateriasService.name);
+
   constructor(
     private readonly sequelize: Sequelize,
     @InjectModel(Subject) private readonly subjectModel: typeof Subject,
@@ -88,6 +90,7 @@ export class MateriasService {
         { transaction },
       );
       await this.notificationsService.logSubjectCreated(subject, actor, transaction);
+      this.logger.log(`Materia created: subjectId=${subject.id} creatorUserId=${user.sub} semester=${subject.semester} program="${subject.programName}"`);
 
       return this.findOne(subject.id, user, transaction);
     });
@@ -286,6 +289,9 @@ export class MateriasService {
       }
 
       await this.auditService.logFieldChanges(id, user.sub, changes, transaction);
+      if (changes.length > 0) {
+        this.logger.log(`Materia updated: subjectId=${id} actorUserId=${user.sub} changedFields=${changes.map((change) => change.fieldName).join(",")}`);
+      }
 
       return this.findOne(id, user, transaction);
     });
@@ -382,6 +388,7 @@ export class MateriasService {
         await this.notificationsService.logStatusUpdated(subject, creator.email, dto.observation, transaction);
       }
 
+      this.logger.log(`Materia status changed: subjectId=${id} actorUserId=${user.sub} previousStatus=${previousStatus} newStatus=${dto.newStatus}`);
       return this.findOne(id, user, transaction);
     });
   }
@@ -421,6 +428,7 @@ export class MateriasService {
         { transaction },
       );
 
+      this.logger.log(`Comment added: subjectId=${id} actorUserId=${user.sub} commentType=${dto.commentType ?? CommentType.GENERAL}`);
       return this.comments(id, user);
     });
   }

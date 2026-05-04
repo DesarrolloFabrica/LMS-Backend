@@ -37,7 +37,7 @@ export class JwtAuthGuard implements CanActivate {
     const header = this.headerValue(cookieHeader);
     if (!header) return undefined;
 
-    const cookieName = this.config.get<string>("session.cookieName") ?? "carga_lms_session";
+    const cookieName = this.config.getOrThrow<string>("session.cookieName");
     const token = header
       .split(";")
       .map((cookie) => cookie.trim())

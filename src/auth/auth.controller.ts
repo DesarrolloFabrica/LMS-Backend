@@ -68,7 +68,7 @@ export class AuthController {
   }
 
   private cookieName() {
-    return this.config.get<string>("session.cookieName") ?? "carga_lms_session";
+    return this.config.getOrThrow<string>("session.cookieName");
   }
 
   private cookieOptions(expiresIn: string): CookieOptions {
@@ -77,7 +77,7 @@ export class AuthController {
       maxAge: this.durationToMs(expiresIn),
       path: "/",
       sameSite: this.sameSite(),
-      secure: this.config.get<boolean>("session.cookieSecure") ?? false,
+      secure: this.config.getOrThrow<boolean>("session.cookieSecure"),
     };
   }
 
@@ -85,7 +85,7 @@ export class AuthController {
     return {
       path: "/",
       sameSite: this.sameSite(),
-      secure: this.config.get<boolean>("session.cookieSecure") ?? false,
+      secure: this.config.getOrThrow<boolean>("session.cookieSecure"),
     };
   }
 

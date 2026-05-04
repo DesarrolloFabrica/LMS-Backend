@@ -41,8 +41,8 @@ import { UsersModule } from "@/users/users.module";
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        secret: config.get<string>("jwt.secret") ?? "change_me",
-        signOptions: { expiresIn: (config.get<string>("jwt.expiresIn") ?? "4h") as never },
+        secret: config.getOrThrow<string>("jwt.secret"),
+        signOptions: { expiresIn: config.getOrThrow<string>("jwt.expiresIn") as never },
       }),
     }),
     SequelizeModule.forRootAsync({
@@ -50,15 +50,15 @@ import { UsersModule } from "@/users/users.module";
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         dialect: "postgres",
-        host: config.get<string>("database.host"),
-        port: config.get<number>("database.port"),
-        database: config.get<string>("database.name"),
-        username: config.get<string>("database.user"),
-        password: config.get<string>("database.password"),
+        host: config.getOrThrow<string>("database.host"),
+        port: config.getOrThrow<number>("database.port"),
+        database: config.getOrThrow<string>("database.name"),
+        username: config.getOrThrow<string>("database.user"),
+        password: config.getOrThrow<string>("database.password"),
         autoLoadModels: true,
-        synchronize: config.get<boolean>("database.sync") ?? false,
-        logging: config.get<boolean>("database.logging") ? console.log : false,
-        dialectOptions: config.get<boolean>("database.ssl")
+        synchronize: config.getOrThrow<boolean>("database.sync"),
+        logging: config.getOrThrow<boolean>("database.logging") ? console.log : false,
+        dialectOptions: config.getOrThrow<boolean>("database.ssl")
           ? { ssl: { require: true, rejectUnauthorized: false } }
           : undefined,
         models: [User, Subject, ContentType, Program, Semester, SubjectContentType, StatusHistory, Comment, NotificationLog, AuditLog],

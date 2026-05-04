@@ -27,13 +27,7 @@ No hay passwords locales en esta aplicacion.
 - `LMS`: revisa, aprueba y devuelve materias.
 - `ADMIN`: acceso completo.
 
-El rol se guarda en base de datos. Para bootstrap inicial:
-
-```env
-INITIAL_ADMIN_EMAILS=admin@cun.edu.co
-INITIAL_LMS_EMAILS=lms@cun.edu.co
-DEFAULT_USER_ROLE=FABRICA
-```
+El rol se guarda en base de datos. Todo usuario nuevo creado por Google inicia como `FABRICA`; luego un administrador puede ajustar el rol en la base de datos o desde una herramienta administrativa futura.
 
 ## Instalacion local
 

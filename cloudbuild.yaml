@@ -8,4 +8,4 @@ steps:
 images:
   - ${_IMAGE}
 substitutions:
-  _IMAGE: us-central1-docker.pkg.dev/$PROJECT_ID/carga-lms/backend:latest
+  _IMAGE: us-central1-docker.pkg.dev/$PROJECT_ID/carga-lms/backend/api:latest

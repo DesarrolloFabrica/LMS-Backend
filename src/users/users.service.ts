@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { InjectModel } from "@nestjs/sequelize";
 import { UserRole } from "@/common/enums/user-role.enum";
 import { User } from "@/users/models/user.model";
@@ -15,7 +14,6 @@ export type GoogleUserProfile = {
 export class UsersService {
   constructor(
     @InjectModel(User) private readonly userModel: typeof User,
-    private readonly config: ConfigService,
   ) {}
 
   async findAll() {
@@ -67,7 +65,7 @@ export class UsersService {
         email: normalizedEmail,
         fullName: profile.fullName,
         avatarUrl: profile.avatarUrl ?? null,
-        role: this.resolveInitialRole(normalizedEmail),
+        role: UserRole.FABRICA,
         isActive: true,
       } as User,
       {
@@ -90,16 +88,4 @@ export class UsersService {
     };
   }
 
-  private resolveInitialRole(email: string) {
-    const adminEmails = this.config.get<string[]>("bootstrapRoles.adminEmails") ?? [];
-    const lmsEmails = this.config.get<string[]>("bootstrapRoles.lmsEmails") ?? [];
-
-    if (adminEmails.includes(email)) return UserRole.ADMIN;
-    if (lmsEmails.includes(email)) return UserRole.LMS;
-
-    const configuredDefault = this.config.get<string>("bootstrapRoles.defaultRole");
-    return Object.values(UserRole).includes(configuredDefault as UserRole)
-      ? (configuredDefault as UserRole)
-      : UserRole.FABRICA;
-  }
 }

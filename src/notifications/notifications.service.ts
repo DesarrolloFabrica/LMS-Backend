@@ -36,7 +36,7 @@ export class NotificationsService {
   ) {}
 
   async logSubjectCreated(subject: Subject, actor: User, transaction?: Transaction) {
-    const recipientEmail = this.config.get<string>("notifications.lmsEmail") ?? "lms@cun.edu.co";
+    const recipientEmail = this.config.getOrThrow<string>("notifications.lmsEmail");
     const textBody = [
       `Materia: ${subject.name}`,
       `Estado: ${this.statusLabel(subject.currentStatus)}`,
@@ -162,7 +162,7 @@ export class NotificationsService {
   }
 
   async logCorrectionsReady(subject: Subject, actor: User, recipientEmail?: string, transaction?: Transaction) {
-    const to = recipientEmail ?? this.config.get<string>("notifications.lmsEmail") ?? "lms@cun.edu.co";
+    const to = recipientEmail ?? this.config.getOrThrow<string>("notifications.lmsEmail");
     const textBody = [
       `Materia: ${subject.name}`,
       `Estado: ${this.statusLabel(subject.currentStatus)}`,
@@ -215,6 +215,7 @@ export class NotificationsService {
     );
 
     if (missingConfigurationReason) {
+      this.logger.log(`Notification skipped: notificationId=${log.id} type=${input.notificationType} subjectId=${input.subjectId} reason="${missingConfigurationReason}"`);
       return log;
     }
 
@@ -235,6 +236,7 @@ export class NotificationsService {
         },
         { transaction },
       );
+      this.logger.log(`Notification sent: notificationId=${log.id} type=${input.notificationType} subjectId=${input.subjectId}`);
     } catch (error) {
       const errorMessage = this.getErrorMessage(error);
       this.logger.warn(`Email delivery failed for notification ${log.id}: ${errorMessage}`);
@@ -253,12 +255,12 @@ export class NotificationsService {
 
   private getTransporter() {
     if (!this.transporter) {
-      const user = this.config.get<string>("notifications.smtpUser");
-      const pass = this.config.get<string>("notifications.smtpPass");
+      const user = this.config.getOrThrow<string>("notifications.smtpUser");
+      const pass = this.config.getOrThrow<string>("notifications.smtpPass");
       this.transporter = nodemailer.createTransport({
         host: this.config.get<string>("notifications.smtpHost"),
-        port: this.config.get<number>("notifications.smtpPort") ?? 587,
-        secure: this.config.get<boolean>("notifications.smtpSecure") ?? false,
+        port: this.config.getOrThrow<number>("notifications.smtpPort"),
+        secure: this.config.getOrThrow<boolean>("notifications.smtpSecure"),
         auth: user && pass ? { user, pass } : undefined,
         connectionTimeout: 10_000,
         greetingTimeout: 10_000,
@@ -276,8 +278,8 @@ export class NotificationsService {
     ];
 
     const missing = required.filter(([, value]) => !value).map(([key]) => key);
-    const user = this.config.get<string>("notifications.smtpUser");
-    const pass = this.config.get<string>("notifications.smtpPass");
+    const user = this.config.getOrThrow<string>("notifications.smtpUser");
+    const pass = this.config.getOrThrow<string>("notifications.smtpPass");
 
     if ((user && !pass) || (!user && pass)) {
       missing.push(user ? "SMTP_PASS" : "SMTP_USER");
@@ -417,7 +419,7 @@ export class NotificationsService {
   }
 
   private appUrl(path: string) {
-    const baseUrl = this.config.get<string>("notifications.appBaseUrl") ?? "http://localhost:5173";
+    const baseUrl = this.config.getOrThrow<string>("notifications.appBaseUrl");
     return `${baseUrl.replace(/\/$/, "")}${path}`;
   }
 

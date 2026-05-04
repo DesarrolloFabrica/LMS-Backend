@@ -1,16 +1,18 @@
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
+  const logger = new Logger("Bootstrap");
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);
-  const corsOrigin = config.get<string>("CORS_ORIGIN") ?? "http://localhost:5173";
+  const corsOrigin = config.getOrThrow<string>("CORS_ORIGIN");
+  const allowedOrigins = corsOrigin.split(",").map((origin) => origin.trim());
 
   app.setGlobalPrefix("api");
   app.enableCors({
-    origin: corsOrigin.split(",").map((origin) => origin.trim()),
+    origin: allowedOrigins,
     credentials: true,
   });
   app.useGlobalPipes(
@@ -21,8 +23,10 @@ async function bootstrap() {
     }),
   );
 
-  const port = Number(config.get<string>("PORT") ?? 3000);
+  const port = config.getOrThrow<number>("port");
   await app.listen(port);
+  logger.log(`Carga LMS backend running on port ${port}`);
+  logger.log(`CORS enabled for ${allowedOrigins.length} origin(s)`);
 }
 
 void bootstrap();
