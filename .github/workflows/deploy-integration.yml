@@ -147,3 +147,12 @@ jobs:
           gcloud run services describe "${SERVICE_NAME}" \
             --region "${REGION}" \
             --format "value(status.url)"
+
+      - name: Show Cloud Run logs on failure
+        if: failure()
+        run: |
+          gcloud logging read \
+            "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE_NAME}" \
+            --project "${PROJECT_ID}" \
+            --limit 50 \
+            --format "value(timestamp,severity,textPayload)"
