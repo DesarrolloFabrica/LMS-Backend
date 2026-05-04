@@ -22,6 +22,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate GitHub configuration
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          DB_PASSWORD_SECRET_NAME: ${{ secrets.DB_PASSWORD_SECRET_NAME }}
+          JWT_SECRET_SECRET_NAME: ${{ secrets.JWT_SECRET_SECRET_NAME }}
+          SMTP_USER_SECRET_NAME: ${{ secrets.SMTP_USER_SECRET_NAME }}
+          SMTP_PASS_SECRET_NAME: ${{ secrets.SMTP_PASS_SECRET_NAME }}
+        run: |
+          required_vars=(
+            PROJECT_ID
+            REGION
+            ARTIFACT_REPOSITORY
+            SERVICE_NAME
+            GCP_SA_KEY
+            DB_PASSWORD_SECRET_NAME
+            JWT_SECRET_SECRET_NAME
+            SMTP_USER_SECRET_NAME
+            SMTP_PASS_SECRET_NAME
+          )
+
+          for name in "${required_vars[@]}"; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing GitHub variable or secret: ${name}"
+              exit 1
+            fi
+          done
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
