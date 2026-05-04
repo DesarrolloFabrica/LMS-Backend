@@ -10,6 +10,16 @@ env:
   REGION: ${{ vars.GCP_REGION }}
   ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
   SERVICE_NAME: ${{ vars.CLOUD_RUN_BACKEND_SERVICE }}
+  CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT: ${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+  CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}
+  FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+  DB_NAME: ${{ vars.DB_NAME }}
+  DB_USER: ${{ vars.DB_USER }}
+  GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+  GOOGLE_ALLOWED_DOMAIN: ${{ vars.GOOGLE_ALLOWED_DOMAIN }}
+  LMS_NOTIFICATION_EMAIL: ${{ vars.LMS_NOTIFICATION_EMAIL }}
+  SMTP_HOST: ${{ vars.SMTP_HOST }}
+  SMTP_FROM: ${{ vars.SMTP_FROM }}
   IMAGE_NAME: backend/api
 
 jobs:
@@ -35,6 +45,8 @@ jobs:
             REGION
             ARTIFACT_REPOSITORY
             SERVICE_NAME
+            CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT
+            CLOUD_SQL_INSTANCE
             GCP_SA_KEY
             DB_PASSWORD_SECRET_NAME
             JWT_SECRET_SECRET_NAME
@@ -48,6 +60,29 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Normalize deployment variables
+        run: |
+          trim_value() {
+            printf '%s' "$1" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+          }
+
+          {
+            echo "PROJECT_ID=$(trim_value "${PROJECT_ID}")"
+            echo "REGION=$(trim_value "${REGION}")"
+            echo "ARTIFACT_REPOSITORY=$(trim_value "${ARTIFACT_REPOSITORY}")"
+            echo "SERVICE_NAME=$(trim_value "${SERVICE_NAME}")"
+            echo "CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT=$(trim_value "${CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT}")"
+            echo "CLOUD_SQL_INSTANCE=$(trim_value "${CLOUD_SQL_INSTANCE}")"
+            echo "FRONTEND_URL=$(trim_value "${FRONTEND_URL}")"
+            echo "DB_NAME=$(trim_value "${DB_NAME}")"
+            echo "DB_USER=$(trim_value "${DB_USER}")"
+            echo "GOOGLE_CLIENT_ID=$(trim_value "${GOOGLE_CLIENT_ID}")"
+            echo "GOOGLE_ALLOWED_DOMAIN=$(trim_value "${GOOGLE_ALLOWED_DOMAIN}")"
+            echo "LMS_NOTIFICATION_EMAIL=$(trim_value "${LMS_NOTIFICATION_EMAIL}")"
+            echo "SMTP_HOST=$(trim_value "${SMTP_HOST}")"
+            echo "SMTP_FROM=$(trim_value "${SMTP_FROM}")"
+          } >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
@@ -77,17 +112,17 @@ jobs:
           region: ${{ env.REGION }}
           flags: >-
             --allow-unauthenticated
-            --service-account=${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
-            --add-cloudsql-instances=${{ vars.CLOUD_SQL_INSTANCE }}
+            --service-account=${{ env.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+            --add-cloudsql-instances=${{ env.CLOUD_SQL_INSTANCE }}
           env_vars: |
             NODE_ENV=production
             PORT=8080
-            CORS_ORIGIN=${{ vars.FRONTEND_URL }}
-            APP_BASE_URL=${{ vars.FRONTEND_URL }}
-            DB_HOST=/cloudsql/${{ vars.CLOUD_SQL_INSTANCE }}
+            CORS_ORIGIN=${{ env.FRONTEND_URL }}
+            APP_BASE_URL=${{ env.FRONTEND_URL }}
+            DB_HOST=/cloudsql/${{ env.CLOUD_SQL_INSTANCE }}
             DB_PORT=5432
-            DB_NAME=${{ vars.DB_NAME }}
-            DB_USER=${{ vars.DB_USER }}
+            DB_NAME=${{ env.DB_NAME }}
+            DB_USER=${{ env.DB_USER }}
             DB_SSL=false
             DB_LOGGING=false
             DB_SYNC=false
@@ -95,13 +130,13 @@ jobs:
             SESSION_COOKIE_NAME=carga_lms_session
             SESSION_COOKIE_SECURE=true
             SESSION_COOKIE_SAME_SITE=none
-            GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}
-            GOOGLE_ALLOWED_DOMAIN=${{ vars.GOOGLE_ALLOWED_DOMAIN }}
-            LMS_NOTIFICATION_EMAIL=${{ vars.LMS_NOTIFICATION_EMAIL }}
-            SMTP_HOST=${{ vars.SMTP_HOST }}
+            GOOGLE_CLIENT_ID=${{ env.GOOGLE_CLIENT_ID }}
+            GOOGLE_ALLOWED_DOMAIN=${{ env.GOOGLE_ALLOWED_DOMAIN }}
+            LMS_NOTIFICATION_EMAIL=${{ env.LMS_NOTIFICATION_EMAIL }}
+            SMTP_HOST=${{ env.SMTP_HOST }}
             SMTP_PORT=587
             SMTP_SECURE=false
-            SMTP_FROM=${{ vars.SMTP_FROM }}
+            SMTP_FROM=${{ env.SMTP_FROM }}
           secrets: |
             DB_PASSWORD=${{ secrets.DB_PASSWORD_SECRET_NAME }}:latest
             JWT_SECRET=${{ secrets.JWT_SECRET_SECRET_NAME }}:latest
