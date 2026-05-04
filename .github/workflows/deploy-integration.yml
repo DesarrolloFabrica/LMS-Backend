@@ -1,4 +1,4 @@
-name: Deploy backend test
+name: Deploy backend integration
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: ${{ vars.GCP_PROJECT_ID_TEST }}
-  REGION: ${{ vars.GCP_REGION_TEST }}
-  ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY_TEST }}
-  SERVICE_NAME: ${{ vars.CLOUD_RUN_BACKEND_SERVICE_TEST }}
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION }}
+  ARTIFACT_REPOSITORY: ${{ vars.GCP_ARTIFACT_REPOSITORY }}
+  SERVICE_NAME: ${{ vars.CLOUD_RUN_BACKEND_SERVICE }}
   IMAGE_NAME: backend/api
 
 jobs:
@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
 
     steps:
       - name: Checkout
@@ -26,8 +25,7 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_TEST }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_TEST }}
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v3
@@ -52,17 +50,17 @@ jobs:
           region: ${{ env.REGION }}
           flags: >-
             --allow-unauthenticated
-            --service-account=${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT_TEST }}
-            --add-cloudsql-instances=${{ vars.CLOUD_SQL_INSTANCE_TEST }}
+            --service-account=${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
+            --add-cloudsql-instances=${{ vars.CLOUD_SQL_INSTANCE }}
           env_vars: |
             NODE_ENV=production
             PORT=8080
-            CORS_ORIGIN=${{ vars.FRONTEND_URL_TEST }}
-            APP_BASE_URL=${{ vars.FRONTEND_URL_TEST }}
-            DB_HOST=/cloudsql/${{ vars.CLOUD_SQL_INSTANCE_TEST }}
+            CORS_ORIGIN=${{ vars.FRONTEND_URL }}
+            APP_BASE_URL=${{ vars.FRONTEND_URL }}
+            DB_HOST=/cloudsql/${{ vars.CLOUD_SQL_INSTANCE }}
             DB_PORT=5432
-            DB_NAME=${{ vars.DB_NAME_TEST }}
-            DB_USER=${{ vars.DB_USER_TEST }}
+            DB_NAME=${{ vars.DB_NAME }}
+            DB_USER=${{ vars.DB_USER }}
             DB_SSL=false
             DB_LOGGING=false
             DB_SYNC=false
@@ -70,18 +68,18 @@ jobs:
             SESSION_COOKIE_NAME=carga_lms_session
             SESSION_COOKIE_SECURE=true
             SESSION_COOKIE_SAME_SITE=none
-            GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID_TEST }}
-            GOOGLE_ALLOWED_DOMAIN=${{ vars.GOOGLE_ALLOWED_DOMAIN_TEST }}
-            LMS_NOTIFICATION_EMAIL=${{ vars.LMS_NOTIFICATION_EMAIL_TEST }}
-            SMTP_HOST=${{ vars.SMTP_HOST_TEST }}
+            GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}
+            GOOGLE_ALLOWED_DOMAIN=${{ vars.GOOGLE_ALLOWED_DOMAIN }}
+            LMS_NOTIFICATION_EMAIL=${{ vars.LMS_NOTIFICATION_EMAIL }}
+            SMTP_HOST=${{ vars.SMTP_HOST }}
             SMTP_PORT=587
             SMTP_SECURE=false
-            SMTP_FROM=${{ vars.SMTP_FROM_TEST }}
+            SMTP_FROM=${{ vars.SMTP_FROM }}
           secrets: |
-            DB_PASSWORD=${{ secrets.DB_PASSWORD_SECRET_NAME_TEST }}:latest
-            JWT_SECRET=${{ secrets.JWT_SECRET_SECRET_NAME_TEST }}:latest
-            SMTP_USER=${{ secrets.SMTP_USER_SECRET_NAME_TEST }}:latest
-            SMTP_PASS=${{ secrets.SMTP_PASS_SECRET_NAME_TEST }}:latest
+            DB_PASSWORD=${{ secrets.DB_PASSWORD_SECRET_NAME }}:latest
+            JWT_SECRET=${{ secrets.JWT_SECRET_SECRET_NAME }}:latest
+            SMTP_USER=${{ secrets.SMTP_USER_SECRET_NAME }}:latest
+            SMTP_PASS=${{ secrets.SMTP_PASS_SECRET_NAME }}:latest
 
       - name: Show service URL
         run: |
