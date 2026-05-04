@@ -116,7 +116,6 @@ jobs:
             --add-cloudsql-instances=${{ env.CLOUD_SQL_INSTANCE }}
           env_vars: |
             NODE_ENV=production
-            PORT=8080
             CORS_ORIGIN=${{ env.FRONTEND_URL }}
             APP_BASE_URL=${{ env.FRONTEND_URL }}
             DB_HOST=/cloudsql/${{ env.CLOUD_SQL_INSTANCE }}
