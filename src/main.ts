@@ -3,7 +3,23 @@ import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 
+let megajsUnhandledRejectionGuardInstalled = false;
+
+function installMegajsUnhandledRejectionGuard() {
+  if (megajsUnhandledRejectionGuardInstalled) return;
+  megajsUnhandledRejectionGuardInstalled = true;
+
+  const log = new Logger("MegajsGuard");
+  process.on("unhandledRejection", (reason: unknown) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    if (!msg.toLowerCase().includes("api is closed")) return;
+    log.warn(`Rechazo tardío ignorado (${msg}); suele venir tras un cierre de sesión muy pronto tras subidas.`);
+  });
+}
+
 async function bootstrap() {
+  installMegajsUnhandledRejectionGuard();
+
   const logger = new Logger("Bootstrap");
   const app = await NestFactory.create(AppModule);
   const config = app.get(ConfigService);

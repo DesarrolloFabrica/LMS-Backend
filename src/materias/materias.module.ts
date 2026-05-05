@@ -4,9 +4,8 @@ import { AuditModule } from "@/audit/audit.module";
 import { ContentType } from "@/catalogs/models/content-type.model";
 import { Program } from "@/catalogs/models/program.model";
 import { Semester } from "@/catalogs/models/semester.model";
-import { GoogleDriveImportModule } from "@/integrations/google-drive/google-drive-import.module";
-import { MegaModule } from "@/integrations/mega/mega.module";
-import { Comment } from "@/materias/models/comment.model";
+import { DriveToMegaModule } from "@/integrations/drive-to-mega/drive-to-mega.module";
+import { GoogleDriveImportModule } from "@/integrations/google-drive/google-drive-import.module";import { Comment } from "@/materias/models/comment.model";
 import { StatusHistory } from "@/materias/models/status-history.model";
 import { SubjectContentType } from "@/materias/models/subject-content-type.model";
 import { Subject } from "@/materias/models/subject.model";
@@ -23,8 +22,7 @@ import { UsersModule } from "@/users/users.module";
     NotificationsModule,
     AuditModule,
     GoogleDriveImportModule,
-    MegaModule,
-  ],
+    DriveToMegaModule,  ],
   controllers: [MateriasController],
   providers: [MateriasService],
   exports: [MateriasService],

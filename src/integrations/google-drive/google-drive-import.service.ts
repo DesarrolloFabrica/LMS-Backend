@@ -37,6 +37,23 @@ export interface DriveFileInfo {
   isFolder: boolean;
 }
 
+/**
+ * Ítem devuelto por listFolderRecursive: lista plana (no árbol), sin descargas.
+ * Solo metadatos obtenidos con files.list / recursión.
+ */
+export interface DriveRecursiveListItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  /** Bytes si Drive incluye size (muchas superficies omiten tamaño para carpetas o Google Docs nativos). */
+  size?: string;
+  /** Ruta bajo la raíz de esta operación (p. ej. "/Videos/clase1.mp4"). */
+  path: string;
+  /** ID del folder Drive que contenía este ítem en el listado donde apareció. */
+  parentFolderId: string;
+  isFolder: boolean;
+}
+
 /** Un archivo descargado de Drive listo para subir a Mega. */
 export interface DriveFile {
   /** Nombre del archivo (ej: "clase1.pdf"). */
@@ -47,6 +64,21 @@ export interface DriveFile {
   buffer: Buffer;
   /** MimeType del archivo según Drive. */
   mimeType: string;
+}
+
+/**
+ * Binary materializado tras descarga o export desde Drive API v3.
+ * El contenido llega como Buffer (internamente suele obtenerse como stream `alt=media` o `files.export`).
+ */
+export interface DriveFileDownloadResult {
+  fileName: string;
+  mimeType: string;
+  buffer: Buffer;
+  /**
+   * `files.get(..., fields: size)` cuando Drive lo proporciona para el recurso binario tal cual está almacenado.
+   * Tras una exportación de Google Workspace suele estar ausente; usar `buffer.length` como tamaño efectivo.
+   */
+  driveReportedSize?: string;
 }
 
 const DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
@@ -181,6 +213,128 @@ export class GoogleDriveImportService {
     }
   }
 
+  /**
+   * Lista de forma RECURSIVA todos los archivos y subcarpetas bajo {@link folderId},
+   * solo metadatos (sin `alt=media`). El resultado es una lista plana: primero pueden
+   * aparecer carpetas y luego hijos conforme la recursión avanza por profundidad.
+   *
+   * @param folderId — ID Drive de la carpeta raíz a inspeccionar.
+   * @param currentPath — Prefijo para las rutas lógicas. Dejar vacío para que los hijos directos usen `/nombre`;
+   *   valores no vacíos siguen convención con barra inicial (p. ej. si se reusara tras un nivel).
+   */
+  async listFolderRecursive(folderId: string, currentPath = ""): Promise<DriveRecursiveListItem[]> {
+    this.logger.log(
+      `[Drive:listRecursive] Inicio folderId=${folderId}, prefijo PATH="${currentPath === "" ? "(raíz)" : currentPath}"`,
+    );
+
+    const drive = this.buildDriveClient();
+    await this.assertIsFolder(drive, folderId);
+
+    const flat: DriveRecursiveListItem[] = [];
+    await this.accumulateRecursiveList(drive, folderId, currentPath.trim(), flat);
+
+    this.logger.log(`[Drive:listRecursive] Total ítems en lista plana: ${flat.length}`);
+    return flat;
+  }
+
+  /**
+   * Descarga por ID un archivo desde Drive API v3.
+   *
+   * - Archivos binarios típicos: stream con `files.get(..., alt: 'media')` → Buffer en memoria.
+   * - Google Docs / Sheets / Slides / Drawings exportables: método `files.export` con formato de salida fijo (PDF, XLSX, PNG según aplique).
+   * - Carpetas: rechazadas con HTTP 400.
+   *
+   * No escribe disco ni Mega; sólo devuelve un objeto con campo `buffer` en memoria.
+   */
+  async downloadFile(fileId: string): Promise<DriveFileDownloadResult> {
+    const drive = this.buildDriveClient();
+    this.logger.log(`[Drive:download] Solicitud metadata id=${fileId}`);
+
+    let meta: drive_v3.Schema$File;
+    try {
+      const res = await drive.files.get({
+        fileId,
+        fields: "id, name, mimeType, size",
+      });
+      meta = res.data;
+    } catch (error: unknown) {
+      this.raiseDriveFileLookupError(error, fileId);
+    }
+
+    const fileName = meta.name ?? "download";
+    const nativeMime = meta.mimeType ?? "application/octet-stream";
+
+    if (nativeMime === DRIVE_FOLDER_MIME) {
+      this.logger.warn(`[Drive:download] Intentó descargar carpeta como archivo id=${fileId}`);
+      throw new BadRequestException(
+        `El recurso "${fileId}" es una carpeta en Drive. Usa la id de un archivo (PDF, vídeo, etc.).`,
+      );
+    }
+
+    const driveReportedSize =
+      meta.size !== undefined && meta.size !== null && `${meta.size}`.trim() !== "" ? String(meta.size) : undefined;
+
+    let buffer: Buffer;
+    let outputFileName = fileName;
+    let outputMimeType = nativeMime;
+
+    if (nativeMime.startsWith("application/vnd.google-apps.")) {
+      const exportPlan = this.googleAppsExportPlan(nativeMime, fileName);
+      if (!exportPlan) {
+        this.logger.warn(`[Drive:download] Google Apps sin soporte export id=${fileId} mime=${nativeMime}`);
+        throw new BadRequestException(
+          `El tipo "${nativeMime}" no tiene export configurado desde el backend (fileId="${fileId}").`,
+        );
+      }
+
+      outputFileName = exportPlan.fileName;
+      outputMimeType = exportPlan.exportMimeType;
+
+      this.logger.log(
+        `[Drive:download] Workspace export id=${fileId} desde=${nativeMime} hacia=${exportPlan.exportMimeType}`,
+      );
+
+      try {
+        const exportRes = await drive.files.export(
+          { fileId, mimeType: exportPlan.exportMimeType },
+          { responseType: "stream" },
+        );
+        buffer = await streamToBuffer(exportRes.data as Readable);
+      } catch (error: unknown) {
+        this.logger.error(`[Drive:download] Export fallido id=${fileId}: ${String(error)}`);
+        throw new InternalServerErrorException(`No se pudo exportar desde Google Workspace (id=${fileId}).`);
+      }
+    } else {
+      this.logger.log(`[Drive:download] Binario alt=media id=${fileId} mime=${nativeMime}`);
+      buffer = await this.fetchBinaryMediaAsBuffer(drive, fileId);
+    }
+
+    this.logger.log(
+      `[Drive:download] Completo id=${fileId} nombre="${outputFileName}" mimeSalida=${outputMimeType} bytesRecibidos=${buffer.length}`,
+    );
+
+    return {
+      fileName: outputFileName,
+      mimeType: outputMimeType,
+      buffer,
+      ...(driveReportedSize !== undefined ? { driveReportedSize } : {}),
+    };
+  }
+
+  /**
+   * Extrae `folderId` desde el enlace público/id puro para flujos que no llaman {@link importFolder}.
+   */
+  getFolderIdFromUrlOrThrow(driveUrl: string): string {
+    const folderId = this.extractFolderId(driveUrl.trim());
+    if (!folderId) {
+      this.logger.warn(`[Drive] Enlace sin folderId reconocible (prefijo): ${driveUrl.slice(0, 96)}`);
+      throw new BadRequestException(
+        "El enlace de Google Drive no contiene un identificador de carpeta válido. Usa un link de carpeta o el ID de la carpeta.",
+      );
+    }
+    return folderId;
+  }
+
   // ── Métodos privados ────────────────────────────────────────────────────────
 
   /**
@@ -216,14 +370,24 @@ export class GoogleDriveImportService {
     const rawKey = this.config.get<string>("googleDrive.serviceAccountPrivateKey");
     const impersonatedUser = this.config.get<string>("googleDrive.impersonatedUser");
 
+    const hasEmail = Boolean(email?.trim());
+    const hasPrivateKeyEnv = Boolean(rawKey?.trim());
+    this.logger.log(
+      `[Drive:auth] GOOGLE_SERVICE_ACCOUNT_EMAIL definida: ${hasEmail}; GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY definida: ${hasPrivateKeyEnv}`,
+    );
+
     if (!email || !rawKey) {
       throw new InternalServerErrorException(
         "Faltan variables de entorno GOOGLE_SERVICE_ACCOUNT_EMAIL / GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.",
       );
     }
 
-    // Las private keys llegan escapadas desde .env (\n → salto real)
-    const privateKey = rawKey.replace(/\\n/g, "\n");
+    const privateKey = this.normalizeGoogleServiceAccountPrivateKey(rawKey);
+    this.logger.log(
+      `[Drive:auth] privateKey empieza con -----BEGIN PRIVATE KEY-----: ${privateKey.startsWith("-----BEGIN PRIVATE KEY-----")}; ` +
+        `termina con -----END PRIVATE KEY-----: ${privateKey.endsWith("-----END PRIVATE KEY-----")}; ` +
+        `longitud: ${privateKey.length}`,
+    );
 
     const auth = new google.auth.GoogleAuth({
       credentials: { client_email: email, private_key: privateKey },
@@ -233,6 +397,108 @@ export class GoogleDriveImportService {
     });
 
     return google.drive({ version: "v3", auth });
+  }
+
+  /**
+   * Normaliza GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY para los casos habituales del .env:
+   *  - trim inicial
+   *  - quita comillas envolventes (`"…"`)
+   *  - quita coma final (valor copiado de un JSON sin cerrar)
+   *  - convierte \n literales a saltos de línea reales (PEM válido)
+   *  - trim final
+   *
+   * Lanza InternalServerErrorException si el PEM resultante no tiene las
+   * cabeceras esperadas, para dar un mensaje claro en lugar del críptico
+   * error:1E08010C:DECODER routines::unsupported de OpenSSL.
+   */
+  private normalizeGoogleServiceAccountPrivateKey(rawPrivateKey: string): string {
+    const pem = rawPrivateKey
+      .trim()
+      .replace(/^"|"$/g, "")
+      .replace(/,$/, "")
+      .replace(/\\n/g, "\n")
+      .trim();
+
+    if (!pem.startsWith("-----BEGIN PRIVATE KEY-----") || !pem.includes("-----END PRIVATE KEY-----")) {
+      this.logger.error(
+        "[Drive:auth] GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY no tiene formato PEM válido " +
+          `(empieza con -----BEGIN PRIVATE KEY-----: ${pem.startsWith("-----BEGIN PRIVATE KEY-----")}, ` +
+          `incluye -----END PRIVATE KEY-----: ${pem.includes("-----END PRIVATE KEY-----")}, ` +
+          `longitud: ${pem.length})`,
+      );
+      throw new InternalServerErrorException(
+        "GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY no tiene formato PEM válido. " +
+          "Asegúrate de que la clave en .env empieza con -----BEGIN PRIVATE KEY----- " +
+          "y termina con -----END PRIVATE KEY-----, con saltos de línea como \\n literales.",
+      );
+    }
+
+    return pem;
+  }
+
+  /**
+   * Ruta visible en la respuesta: hijos directos del folder raíz llevan "/" + nombre.
+   */
+  private buildLogicalDrivePath(prefix: string, segmentName: string): string {
+    const trimmedPrefix = prefix.trim();
+    if (trimmedPrefix === "") return `/${segmentName}`;
+    const base = trimmedPrefix.startsWith("/") ? trimmedPrefix : `/${trimmedPrefix}`;
+    return `${base}/${segmentName}`;
+  }
+
+  /**
+   * Lista los hijos inmediatos de una carpeta, empuja metadatos a {@link out} y si un hijo es
+   * carpeta, se llama a sí mismo. Usa paginación `nextPageToken` para no omitir grandes carpetas.
+   */
+  private async accumulateRecursiveList(
+    drive: drive_v3.Drive,
+    parentFolderDriveId: string,
+    logicalPathPrefix: string,
+    out: DriveRecursiveListItem[],
+  ): Promise<void> {
+    let pageToken: string | undefined;
+
+    do {
+      this.logger.debug(`[Drive:listRecursive] Carpeta Drive ${parentFolderDriveId} (prefijo="${logicalPathPrefix || "/"}")`);
+
+      const res = await drive.files.list({
+        q: `'${parentFolderDriveId}' in parents and trashed = false`,
+        fields: "nextPageToken, files(id, name, mimeType, size)",
+        pageSize: 1000,
+        pageToken,
+      });
+
+      const items = res.data.files ?? [];
+      pageToken = res.data.nextPageToken ?? undefined;
+
+      for (const item of items) {
+        if (!item.id) continue;
+
+        const name = item.name ?? "(sin nombre)";
+        const mimeType = item.mimeType ?? "application/octet-stream";
+        const isFolder = mimeType === DRIVE_FOLDER_MIME;
+        const path = this.buildLogicalDrivePath(logicalPathPrefix, name);
+
+        const row: DriveRecursiveListItem = {
+          id: item.id,
+          name,
+          mimeType,
+          path,
+          parentFolderId: parentFolderDriveId,
+          isFolder,
+        };
+
+        if (item.size != null && `${item.size}`.trim() !== "") {
+          row.size = String(item.size);
+        }
+
+        out.push(row);
+
+        if (isFolder) {
+          await this.accumulateRecursiveList(drive, item.id, path, out);
+        }
+      }
+    } while (pageToken);
   }
 
   /**
@@ -254,6 +520,77 @@ export class GoogleDriveImportService {
       if (error instanceof BadRequestException) throw error;
       this.logger.error(`[Drive] Error al validar la carpeta ${folderId}: ${String(error)}`);
       throw new InternalServerErrorException(`No se pudo acceder a la carpeta de Drive: ${String(error)}`);
+    }
+  }
+
+  /** Descarga un binario cargado como tal en Drive mediante `files.get` + alt=media. */
+  private async fetchBinaryMediaAsBuffer(drive: drive_v3.Drive, fileId: string): Promise<Buffer> {
+    try {
+      const res = await drive.files.get(
+        { fileId, alt: "media" },
+        { responseType: "stream" },
+      );
+      return await streamToBuffer(res.data as Readable);
+    } catch (error: unknown) {
+      this.logger.error(`[Drive:download] Error alt=media id=${fileId}: ${String(error)}`);
+      throw new InternalServerErrorException(`Error descargando binario desde Drive (id=${fileId}).`);
+    }
+  }
+
+  /**
+   * Errores de `files.get` al resolver metadatos o permisos antes de una descarga.
+   */
+  private raiseDriveFileLookupError(error: unknown, fileId: string): never {
+    if (error instanceof BadRequestException) throw error;
+    if (error instanceof NotFoundException) throw error;
+
+    const gaxiosError = error as { code?: number; message?: string };
+    const httpCode = gaxiosError.code;
+
+    if (httpCode === 404) {
+      this.logger.error(`[Drive:download] Metadata 404 id=${fileId}`);
+      throw new NotFoundException(
+        `Archivo "${fileId}" no existe en Drive o la cuenta de servicio no tiene visibilidad sobre él.`,
+      );
+    }
+
+    if (httpCode === 403) {
+      this.logger.error(`[Drive:download] Metadata 403 id=${fileId}`);
+      throw new ForbiddenException(
+        `Sin permiso de lectura para "${fileId}". Comparte el elemento con ${this.config.get<string>("googleDrive.serviceAccountEmail")}.`,
+      );
+    }
+
+    this.logger.error(`[Drive:download] Metadata inesperada id=${fileId}: ${String(error)}`);
+    throw new InternalServerErrorException(
+      `Fallo consultando archivo en Drive: ${gaxiosError.message ?? String(error)}`,
+    );
+  }
+
+  /**
+   * Mime de export y nombre sugeridos para algunos artefactos de Google Workspace
+   * (solo los que tienen formato de salida estable en Drive v3).
+   */
+  private googleAppsExportPlan(nativeMime: string, displayName: string): {
+    exportMimeType: string;
+    fileName: string;
+  } | null {
+    const base = displayName.replace(/\.[^/.]+$/, "");
+    switch (nativeMime) {
+      case "application/vnd.google-apps.document":
+        return { exportMimeType: "application/pdf", fileName: `${base}.pdf` };
+      case "application/vnd.google-apps.spreadsheet":
+        return {
+          exportMimeType:
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          fileName: `${base}.xlsx`,
+        };
+      case "application/vnd.google-apps.presentation":
+        return { exportMimeType: "application/pdf", fileName: `${base}.pdf` };
+      case "application/vnd.google-apps.drawing":
+        return { exportMimeType: "image/png", fileName: `${base}.png` };
+      default:
+        return null;
     }
   }
 
@@ -298,7 +635,7 @@ export class GoogleDriveImportService {
           await this.traverseFolder(drive, item.id, `${basePath}${item.name}/`, files);
         } else {
           // Es un archivo → descargar
-          const buffer = await this.downloadFile(drive, item.id, item.name);
+          const buffer = await this.fetchBinaryMediaAsBuffer(drive, item.id);
           files.push({
             name: item.name,
             relativePath: `${basePath}${item.name}`,
@@ -309,25 +646,6 @@ export class GoogleDriveImportService {
         }
       }
     } while (pageToken);
-  }
-
-  /**
-   * Descarga un archivo de Drive como Buffer.
-   * Los Google Docs nativos (Docs, Sheets, Slides) se exportan en un formato
-   * estándar antes de descargarse.
-   */
-  private async downloadFile(drive: drive_v3.Drive, fileId: string, fileName: string): Promise<Buffer> {
-    try {
-      const res = await drive.files.get(
-        { fileId, alt: "media" },
-        { responseType: "stream" },
-      );
-
-      return await streamToBuffer(res.data as Readable);
-    } catch (error) {
-      this.logger.error(`[Drive] Error al descargar archivo "${fileName}" (${fileId}): ${String(error)}`);
-      throw new InternalServerErrorException(`Error descargando "${fileName}" desde Drive.`);
-    }
   }
 }
 

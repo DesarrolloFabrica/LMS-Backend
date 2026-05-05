@@ -13,7 +13,7 @@ import { ContentType } from "@/catalogs/models/content-type.model";
 import { Program } from "@/catalogs/models/program.model";
 import { Semester } from "@/catalogs/models/semester.model";
 import { GoogleDriveImportService } from "@/integrations/google-drive/google-drive-import.service";
-import { MegaService } from "@/integrations/mega/mega.service";
+import { DriveToMegaService } from "@/integrations/drive-to-mega/drive-to-mega.service";
 import { CreateCommentDto } from "@/materias/dto/create-comment.dto";
 import { CreateSubjectDto } from "@/materias/dto/create-subject.dto";
 import { QuerySubjectsDto } from "@/materias/dto/query-subjects.dto";
@@ -55,52 +55,44 @@ export class MateriasService {
     private readonly notificationsService: NotificationsService,
     private readonly auditService: AuditService,
     private readonly googleDriveImport: GoogleDriveImportService,
-    private readonly megaService: MegaService,
+    private readonly driveToMega: DriveToMegaService,
   ) {}
 
   /**
    * Crea una nueva solicitud de materia.
    *
-   * Flujo Paso 1 (Drive → Mega → BD):
-   *  1. Validar permisos y datos del formulario.
-   *  2. Generar un requestId (UUID) antes de tocar la BD.
-   *  3. Descargar todo el contenido de la carpeta Drive (GoogleDriveImportService).
-   *  4. Subir los archivos a Mega respetando subcarpetas (MegaService).
-   *  5. Solo si Mega responde OK → insertar la fila en BD con los metadatos.
-   *  6. Si cualquier paso 3-4 falla → lanzar error y NO crear la solicitud.
+   * Flujo (Drive → Mega → BD):
+   *  1. Validar permisos y datos del formulario ({@link CreateSubjectDto}, incl. `driveFolderUrl`).
+   *  2. Generar `requestId` (UUID) estable para nombres en Mega.
+   *  3. Obtener `folderId` desde el link de carpeta Drive.
+   *  4. Sincronizar recursivamente Drive → Mega bajo `{MEGA_BASE_PATH}/2026 Q2/PRUEBAS/{semestre}/{programa}/{materia}-{requestId}`.
+   *  5. Si la sync falla → no crear fila en BD; error HTTP claro al cliente.
+   *  6. Si OK → transacción en BD con metadatos Mega (`megaFolderId`, link, path, estado `created`).
    */
   async create(dto: CreateSubjectDto, user: AuthUser) {
     if (user.role !== UserRole.FABRICA && user.role !== UserRole.ADMIN) {
       throw new ForbiddenException("Only Fabrica or Admin can create materias");
     }
 
-    // ── Paso 2: generar un ID único para esta solicitud ────────────────────
-    // Se usa antes de la transacción para poder nombrar la carpeta en Mega
-    // con un identificador estable incluso si la BD aún no tiene la fila.
     const requestId = randomUUID();
-    this.logger.log(`[Create] Iniciando solicitud temporal ${requestId} para "${dto.name}"`);
 
-    // ── Paso 3: descargar carpeta de Drive ────────────────────────────────
-    // Si falla aquí (link inválido, sin permisos, Drive caído) se lanza
-    // excepción y la BD no se toca.
-    this.logger.log(`[Create][${requestId}] Descargando carpeta Drive: ${dto.driveFolderUrl}`);
-    const driveFiles = await this.googleDriveImport.importFolder(dto.driveFolderUrl);
-    this.logger.log(`[Create][${requestId}] Drive OK — ${driveFiles.length} archivo(s) descargados`);
+    const driveFolderId = this.googleDriveImport.getFolderIdFromUrlOrThrow(dto.driveFolderUrl);
+    this.logger.log(`[Create][${requestId}] folderId Drive extraído: ${driveFolderId}`);
 
-    // ── Paso 4: subir a Mega ──────────────────────────────────────────────
-    // Si Mega falla (credenciales, límite de espacio, etc.) se lanza
-    // excepción y la BD no se toca.
-    this.logger.log(`[Create][${requestId}] Subiendo a Mega…`);
-    const megaResult = await this.megaService.uploadFolder(
-      driveFiles,
-      dto.semester,
-      dto.programName,
-      dto.name,
+    this.logger.log(`[Create][${requestId}] Inicio sincronización Drive → Mega para "${dto.name}"…`);
+
+    const megaResult = await this.driveToMega.syncDriveFolderForMateriaCreate({
+      driveFolderId,
+      semester: dto.semester,
+      programName: dto.programName,
+      subjectName: dto.name,
       requestId,
-    );
-    this.logger.log(`[Create][${requestId}] Mega OK — path: ${megaResult.megaPath}`);
+    });
 
-    // ── Paso 5: persistir en BD (solo si Drive + Mega fueron exitosos) ────
+    this.logger.log(
+      `[Create][${requestId}] Sync Drive→Mega completada — megaPath=${megaResult.megaPath} linkMega=${megaResult.megaFolderLink ? "sí" : "no"} megaFolderId=${megaResult.megaFolderId}`,
+    );
+
     return this.sequelize.transaction(async (transaction) => {
       const actor = await this.getUserOrFail(user.sub, transaction);
       const contentTypes = await this.resolveContentTypes(dto.contentTypeCodes, transaction);
@@ -117,7 +109,6 @@ export class MateriasService {
           driveFolderUrl: dto.driveFolderUrl,
           currentStatus: SubjectStatus.PENDIENTE,
           createdByUserId: user.sub,
-          // Metadatos de Mega — vienen del resultado del Paso 4
           megaFolderId: megaResult.megaFolderId,
           megaFolderLink: megaResult.megaFolderLink,
           megaPath: megaResult.megaPath,
@@ -141,7 +132,9 @@ export class MateriasService {
       );
 
       await this.notificationsService.logSubjectCreated(subject, actor, transaction);
-      this.logger.log(`Materia created: subjectId=${subject.id} creatorUserId=${user.sub} semester=${subject.semester} program="${subject.programName}"`);
+      this.logger.log(
+        `[Create][${requestId}] Materia creada en BD — subjectId=${subject.id} creatorUserId=${user.sub} semester=${subject.semester} program="${subject.programName}"`,
+      );
 
       return this.findOne(subject.id, user, transaction);
     });
