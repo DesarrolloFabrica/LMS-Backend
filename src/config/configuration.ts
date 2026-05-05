@@ -34,6 +34,26 @@ export default () => ({
     smtpPass: requiredEnv("SMTP_PASS"),
     smtpFrom: optionalEnv("SMTP_FROM"),
   },
+
+  // ── Google Drive Service Account ──────────────────────────────────────────
+  // Usada por GoogleDriveImportService para leer carpetas de Drive.
+  // La private key llega escapada desde .env (los \n son literales);
+  // el servicio los convierte a saltos de línea reales.
+  googleDrive: {
+    serviceAccountEmail: optionalEnv("GOOGLE_SERVICE_ACCOUNT_EMAIL"),
+    serviceAccountPrivateKey: optionalEnv("GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY"),
+    // Opcional: si está definido, se impersona este usuario via domain-wide delegation.
+    impersonatedUser: optionalEnv("GOOGLE_IMPERSONATED_USER"),
+  },
+
+  // ── Mega ──────────────────────────────────────────────────────────────────
+  // Usada por MegaService para subir archivos.
+  // MEGA_BASE_PATH define la raíz dentro de la cuenta (default: /Carga LMS).
+  mega: {
+    email: optionalEnv("MEGA_EMAIL"),
+    password: optionalEnv("MEGA_PASSWORD"),
+    basePath: process.env.MEGA_BASE_PATH ?? "/Carga LMS",
+  },
 });
 
 function requiredEnv(key: string) {

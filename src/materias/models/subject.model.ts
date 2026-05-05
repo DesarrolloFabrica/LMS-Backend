@@ -53,11 +53,39 @@ export class Subject extends Model<Subject> {
   @Column({ type: DataType.TEXT, allowNull: false })
   declare contentDescription: string;
 
+  /** Link de la carpeta de Google Drive que envió el GIF. */
   @Column({ type: DataType.TEXT, allowNull: false })
   declare driveFolderUrl: string;
 
-  @Column({ type: DataType.TEXT, allowNull: true })
-  declare cdigitalUrl?: string | null;
+  // ── Campos Mega ────────────────────────────────────────────────────────────
+  // Se escriben en la misma transacción de creación, DESPUÉS de que la copia
+  // Drive→Mega termina correctamente.  Si Mega falla, la fila NO se inserta.
+  //
+  // Los field: '...' son explícitos aunque `underscored: true` haría el mismo
+  // mapeo automático, porque el sufijo "At" en megaCreatedAt podría confundirse
+  // con los campos de timestamp gestionados por Sequelize (createdAt / updatedAt).
+
+  /** Identificador (handle) de la carpeta raíz creada en Mega. */
+  @Column({ field: "mega_folder_id", type: DataType.TEXT, allowNull: true })
+  declare megaFolderId?: string | null;
+
+  /** URL pública de la carpeta en Mega: https://mega.nz/folder/{handle}#{key}. */
+  @Column({ field: "mega_folder_link", type: DataType.TEXT, allowNull: true })
+  declare megaFolderLink?: string | null;
+
+  /** Ruta lógica dentro de la cuenta Mega: /Carga LMS/{semestre}/{programa}/{materia}-{uuid}. */
+  @Column({ field: "mega_path", type: DataType.TEXT, allowNull: true })
+  declare megaPath?: string | null;
+
+  /** Estado de la copia a Mega. Valores: 'created' | 'pending' | 'error'. */
+  @Column({ field: "mega_status", type: DataType.STRING(30), allowNull: true })
+  declare megaStatus?: string | null;
+
+  /** Fecha/hora en que la carpeta Mega fue creada correctamente. */
+  @Column({ field: "mega_created_at", type: DataType.DATE, allowNull: true })
+  declare megaCreatedAt?: Date | null;
+
+  // ── Estado del flujo LMS ───────────────────────────────────────────────────
 
   @Column({
     type: DataType.STRING(60),
@@ -65,6 +93,10 @@ export class Subject extends Model<Subject> {
     defaultValue: SubjectStatus.PENDIENTE,
   })
   declare currentStatus: SubjectStatus;
+
+  /** URL en C-Digital asignada por el coordinador LMS al aprobar la materia. */
+  @Column({ type: DataType.TEXT, allowNull: true })
+  declare cdigitalUrl?: string | null;
 
   @ForeignKey(() => User)
   @Column({ type: DataType.INTEGER, allowNull: false })

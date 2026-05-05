@@ -2,6 +2,7 @@ import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundEx
 import { InjectModel } from "@nestjs/sequelize";
 import { col, fn, literal, Op, Transaction, WhereOptions } from "sequelize";
 import { Sequelize } from "sequelize-typescript";
+import { randomUUID } from "crypto";
 import { AuditService, FieldChange } from "@/audit/audit.service";
 import { AuthUser } from "@/auth/types/auth-user.type";
 import { CommentType } from "@/common/enums/comment-type.enum";
@@ -11,6 +12,8 @@ import { UserRole } from "@/common/enums/user-role.enum";
 import { ContentType } from "@/catalogs/models/content-type.model";
 import { Program } from "@/catalogs/models/program.model";
 import { Semester } from "@/catalogs/models/semester.model";
+import { GoogleDriveImportService } from "@/integrations/google-drive/google-drive-import.service";
+import { MegaService } from "@/integrations/mega/mega.service";
 import { CreateCommentDto } from "@/materias/dto/create-comment.dto";
 import { CreateSubjectDto } from "@/materias/dto/create-subject.dto";
 import { QuerySubjectsDto } from "@/materias/dto/query-subjects.dto";
@@ -51,13 +54,53 @@ export class MateriasService {
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly notificationsService: NotificationsService,
     private readonly auditService: AuditService,
+    private readonly googleDriveImport: GoogleDriveImportService,
+    private readonly megaService: MegaService,
   ) {}
 
+  /**
+   * Crea una nueva solicitud de materia.
+   *
+   * Flujo Paso 1 (Drive → Mega → BD):
+   *  1. Validar permisos y datos del formulario.
+   *  2. Generar un requestId (UUID) antes de tocar la BD.
+   *  3. Descargar todo el contenido de la carpeta Drive (GoogleDriveImportService).
+   *  4. Subir los archivos a Mega respetando subcarpetas (MegaService).
+   *  5. Solo si Mega responde OK → insertar la fila en BD con los metadatos.
+   *  6. Si cualquier paso 3-4 falla → lanzar error y NO crear la solicitud.
+   */
   async create(dto: CreateSubjectDto, user: AuthUser) {
     if (user.role !== UserRole.FABRICA && user.role !== UserRole.ADMIN) {
       throw new ForbiddenException("Only Fabrica or Admin can create materias");
     }
 
+    // ── Paso 2: generar un ID único para esta solicitud ────────────────────
+    // Se usa antes de la transacción para poder nombrar la carpeta en Mega
+    // con un identificador estable incluso si la BD aún no tiene la fila.
+    const requestId = randomUUID();
+    this.logger.log(`[Create] Iniciando solicitud temporal ${requestId} para "${dto.name}"`);
+
+    // ── Paso 3: descargar carpeta de Drive ────────────────────────────────
+    // Si falla aquí (link inválido, sin permisos, Drive caído) se lanza
+    // excepción y la BD no se toca.
+    this.logger.log(`[Create][${requestId}] Descargando carpeta Drive: ${dto.driveFolderUrl}`);
+    const driveFiles = await this.googleDriveImport.importFolder(dto.driveFolderUrl);
+    this.logger.log(`[Create][${requestId}] Drive OK — ${driveFiles.length} archivo(s) descargados`);
+
+    // ── Paso 4: subir a Mega ──────────────────────────────────────────────
+    // Si Mega falla (credenciales, límite de espacio, etc.) se lanza
+    // excepción y la BD no se toca.
+    this.logger.log(`[Create][${requestId}] Subiendo a Mega…`);
+    const megaResult = await this.megaService.uploadFolder(
+      driveFiles,
+      dto.semester,
+      dto.programName,
+      dto.name,
+      requestId,
+    );
+    this.logger.log(`[Create][${requestId}] Mega OK — path: ${megaResult.megaPath}`);
+
+    // ── Paso 5: persistir en BD (solo si Drive + Mega fueron exitosos) ────
     return this.sequelize.transaction(async (transaction) => {
       const actor = await this.getUserOrFail(user.sub, transaction);
       const contentTypes = await this.resolveContentTypes(dto.contentTypeCodes, transaction);
@@ -74,11 +117,18 @@ export class MateriasService {
           driveFolderUrl: dto.driveFolderUrl,
           currentStatus: SubjectStatus.PENDIENTE,
           createdByUserId: user.sub,
+          // Metadatos de Mega — vienen del resultado del Paso 4
+          megaFolderId: megaResult.megaFolderId,
+          megaFolderLink: megaResult.megaFolderLink,
+          megaPath: megaResult.megaPath,
+          megaStatus: megaResult.megaStatus,
+          megaCreatedAt: megaResult.megaCreatedAt,
         } as Subject,
         { transaction },
       );
 
       await (subject as any).$set("contentTypes", contentTypes, { transaction });
+
       await this.statusHistoryModel.create(
         {
           subjectId: subject.id,
@@ -89,6 +139,7 @@ export class MateriasService {
         } as StatusHistory,
         { transaction },
       );
+
       await this.notificationsService.logSubjectCreated(subject, actor, transaction);
       this.logger.log(`Materia created: subjectId=${subject.id} creatorUserId=${user.sub} semester=${subject.semester} program="${subject.programName}"`);
 

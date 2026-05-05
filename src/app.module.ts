@@ -19,6 +19,7 @@ import { Program } from "@/catalogs/models/program.model";
 import { Semester } from "@/catalogs/models/semester.model";
 import { CatalogsModule } from "@/catalogs/catalogs.module";
 import { HealthModule } from "@/health/health.module";
+import { TestModule } from "@/test/test.module";
 import { Comment } from "@/materias/models/comment.model";
 import { StatusHistory } from "@/materias/models/status-history.model";
 import { SubjectContentType } from "@/materias/models/subject-content-type.model";
@@ -75,6 +76,7 @@ import { UsersModule } from "@/users/users.module";
     NotificationsModule,
     AuditModule,
     HealthModule,
+    TestModule,
   ],
 })
 export class AppModule {
