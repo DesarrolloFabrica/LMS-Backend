@@ -7,6 +7,9 @@ coverage/
 .env
 .env.local
 .env.*.local
+service_account*.json
+service_acount*.json
+*.service-account.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

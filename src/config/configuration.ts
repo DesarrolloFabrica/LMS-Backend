@@ -24,6 +24,14 @@ export default () => ({
     clientId: requiredEnv("GOOGLE_CLIENT_ID"),
     allowedDomain: optionalEnv("GOOGLE_ALLOWED_DOMAIN"),
   },
+  drive: {
+    serviceAccountJson: requiredEnv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON"),
+  },
+  mega: {
+    email: requiredEnv("MEGA_EMAIL"),
+    password: requiredEnv("MEGA_PASSWORD"),
+    rootFolderName: optionalEnv("MEGA_ROOT_FOLDER_NAME"),
+  },
   notifications: {
     lmsEmail: requiredEnv("LMS_NOTIFICATION_EMAIL"),
     appBaseUrl: requiredEnv("APP_BASE_URL"),

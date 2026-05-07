@@ -22,6 +22,7 @@ import { HealthModule } from "@/health/health.module";
 import { Comment } from "@/materias/models/comment.model";
 import { StatusHistory } from "@/materias/models/status-history.model";
 import { SubjectContentType } from "@/materias/models/subject-content-type.model";
+import { SubjectTransferFile } from "@/materias/models/subject-transfer-file.model";
 import { Subject } from "@/materias/models/subject.model";
 import { MateriasModule } from "@/materias/materias.module";
 import { NotificationLog } from "@/notifications/models/notification-log.model";
@@ -61,7 +62,19 @@ import { UsersModule } from "@/users/users.module";
         dialectOptions: config.getOrThrow<boolean>("database.ssl")
           ? { ssl: { require: true, rejectUnauthorized: false } }
           : undefined,
-        models: [User, Subject, ContentType, Program, Semester, SubjectContentType, StatusHistory, Comment, NotificationLog, AuditLog],
+        models: [
+          User,
+          Subject,
+          ContentType,
+          Program,
+          Semester,
+          SubjectContentType,
+          SubjectTransferFile,
+          StatusHistory,
+          Comment,
+          NotificationLog,
+          AuditLog,
+        ],
         define: {
           underscored: true,
         },

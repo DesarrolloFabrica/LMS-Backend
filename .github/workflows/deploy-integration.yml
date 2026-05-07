@@ -56,6 +56,9 @@ jobs:
           JWT_SECRET_SECRET_NAME: ${{ secrets.JWT_SECRET_SECRET_NAME }}
           SMTP_USER_SECRET_NAME: ${{ secrets.SMTP_USER_SECRET_NAME }}
           SMTP_PASS_SECRET_NAME: ${{ secrets.SMTP_PASS_SECRET_NAME }}
+          GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON_SECRET_NAME: ${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON_SECRET_NAME }}
+          MEGA_EMAIL_SECRET_NAME: ${{ secrets.MEGA_EMAIL_SECRET_NAME }}
+          MEGA_PASSWORD_SECRET_NAME: ${{ secrets.MEGA_PASSWORD_SECRET_NAME }}
         run: |
           required_vars=(
             PROJECT_ID
@@ -69,6 +72,9 @@ jobs:
             JWT_SECRET_SECRET_NAME
             SMTP_USER_SECRET_NAME
             SMTP_PASS_SECRET_NAME
+            GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON_SECRET_NAME
+            MEGA_EMAIL_SECRET_NAME
+            MEGA_PASSWORD_SECRET_NAME
           )
 
           for name in "${required_vars[@]}"; do
@@ -205,6 +211,7 @@ jobs:
             --allow-unauthenticated
             --service-account=${{ env.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ env.CLOUD_SQL_INSTANCE }}
+            --timeout=3600
           env_vars: |
             NODE_ENV=production
             CORS_ORIGIN=${{ env.FRONTEND_URL }}
@@ -227,11 +234,15 @@ jobs:
             SMTP_PORT=587
             SMTP_SECURE=false
             SMTP_FROM=${{ env.SMTP_FROM }}
+            MEGA_ROOT_FOLDER_NAME=Carga LMS
           secrets: |
             DB_PASSWORD=${{ secrets.DB_PASSWORD_SECRET_NAME }}:latest
             JWT_SECRET=${{ secrets.JWT_SECRET_SECRET_NAME }}:latest
             SMTP_USER=${{ secrets.SMTP_USER_SECRET_NAME }}:latest
             SMTP_PASS=${{ secrets.SMTP_PASS_SECRET_NAME }}:latest
+            GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON=${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON_SECRET_NAME }}:latest
+            MEGA_EMAIL=${{ secrets.MEGA_EMAIL_SECRET_NAME }}:latest
+            MEGA_PASSWORD=${{ secrets.MEGA_PASSWORD_SECRET_NAME }}:latest
 
       - name: Show service URL
         run: |
