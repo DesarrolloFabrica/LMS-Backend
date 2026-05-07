@@ -103,6 +103,12 @@ export class MateriasController {
   }
 
   @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
+  @Get(":id/timeline")
+  timeline(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    return this.materiasService.timeline(id, user);
+  }
+
+  @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
   @Get(":id/files")
   files(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
     return this.materiasService.files(id, user);
