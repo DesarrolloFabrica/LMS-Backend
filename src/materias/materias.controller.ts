@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
+import type { Response } from "express";
 import { AuthUser } from "@/auth/types/auth-user.type";
 import { CurrentUser } from "@/common/decorators/current-user.decorator";
 import { Roles } from "@/common/decorators/roles.decorator";
@@ -41,6 +42,12 @@ export class MateriasController {
     return this.materiasService.activity(query, user);
   }
 
+  @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
+  @Get("transfers/:transferId/progress")
+  transferProgress(@Param("transferId") transferId: string) {
+    return this.materiasService.transferProgress(transferId);
+  }
+
   @Roles(UserRole.FABRICA, UserRole.ADMIN)
   @Get("fabrica/mine")
   mine(@Query() query: QuerySubjectsDto, @CurrentUser() user: AuthUser) {
@@ -57,6 +64,12 @@ export class MateriasController {
   @Get("lms/completed")
   lmsCompleted(@Query() query: QuerySubjectsDto) {
     return this.materiasService.findLmsCompleted(query);
+  }
+
+  @Roles(UserRole.LMS, UserRole.ADMIN)
+  @Get("lms/upload-history")
+  uploadHistory(@Query() query: QuerySubjectsDto, @CurrentUser() user: AuthUser) {
+    return this.materiasService.uploadHistory(query, user);
   }
 
   @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
@@ -87,6 +100,30 @@ export class MateriasController {
   @Get(":id/comments")
   comments(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
     return this.materiasService.comments(id, user);
+  }
+
+  @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
+  @Get(":id/files")
+  files(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
+    return this.materiasService.files(id, user);
+  }
+
+  @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
+  @Get(":id/files/:fileId/download")
+  downloadFile(
+    @Param("id", ParseIntPipe) id: number,
+    @Param("fileId", ParseIntPipe) fileId: number,
+    @Query("inline") inline: string | undefined,
+    @CurrentUser() user: AuthUser,
+    @Res() response: Response,
+  ) {
+    return this.materiasService.downloadFile(id, fileId, user, response, inline === "true");
+  }
+
+  @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)
+  @Get(":id/download.zip")
+  downloadZip(@Param("id", ParseIntPipe) id: number, @CurrentUser() user: AuthUser, @Res() response: Response) {
+    return this.materiasService.downloadZip(id, user, response);
   }
 
   @Roles(UserRole.FABRICA, UserRole.LMS, UserRole.ADMIN)

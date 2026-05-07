@@ -1,7 +1,16 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { InjectModel } from "@nestjs/sequelize";
+import archiver from "archiver";
+import { execFile } from "node:child_process";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, extname, join } from "node:path";
+import { pipeline } from "node:stream/promises";
+import type { Response } from "express";
 import { col, fn, literal, Op, Transaction, WhereOptions } from "sequelize";
 import { Sequelize } from "sequelize-typescript";
+import { promisify } from "node:util";
 import { AuditService, FieldChange } from "@/audit/audit.service";
 import { AuthUser } from "@/auth/types/auth-user.type";
 import { CommentType } from "@/common/enums/comment-type.enum";
@@ -18,8 +27,12 @@ import { UpdateSubjectDto } from "@/materias/dto/update-subject.dto";
 import { UpdateSubjectStatusDto } from "@/materias/dto/update-subject-status.dto";
 import { Comment } from "@/materias/models/comment.model";
 import { StatusHistory } from "@/materias/models/status-history.model";
+import { SubjectContentType } from "@/materias/models/subject-content-type.model";
+import { SubjectTransferFile } from "@/materias/models/subject-transfer-file.model";
 import { Subject } from "@/materias/models/subject.model";
 import { NotificationsService } from "@/notifications/notifications.service";
+import { DriveService, DriveTransferFile } from "@/transfers/drive.service";
+import { TransferService } from "@/transfers/transfer.service";
 import { User } from "@/users/models/user.model";
 
 type SubjectWhere = WhereOptions<Subject> & {
@@ -36,6 +49,9 @@ const VALID_TRANSITIONS: Record<SubjectStatus, SubjectStatus[]> = {
   [SubjectStatus.APROBADO]: [],
 };
 
+const execFileAsync = promisify(execFile);
+const OFFICE_PREVIEW_EXTENSIONS = new Set([".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"]);
+
 @Injectable()
 export class MateriasService {
   private readonly logger = new Logger(MateriasService.name);
@@ -47,10 +63,14 @@ export class MateriasService {
     @InjectModel(Program) private readonly programModel: typeof Program,
     @InjectModel(Semester) private readonly semesterModel: typeof Semester,
     @InjectModel(StatusHistory) private readonly statusHistoryModel: typeof StatusHistory,
+    @InjectModel(SubjectContentType) private readonly subjectContentTypeModel: typeof SubjectContentType,
+    @InjectModel(SubjectTransferFile) private readonly subjectTransferFileModel: typeof SubjectTransferFile,
     @InjectModel(Comment) private readonly commentModel: typeof Comment,
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly notificationsService: NotificationsService,
     private readonly auditService: AuditService,
+    private readonly transferService: TransferService,
+    private readonly driveService: DriveService,
   ) {}
 
   async create(dto: CreateSubjectDto, user: AuthUser) {
@@ -58,8 +78,7 @@ export class MateriasService {
       throw new ForbiddenException("Only Fabrica or Admin can create materias");
     }
 
-    return this.sequelize.transaction(async (transaction) => {
-      const actor = await this.getUserOrFail(user.sub, transaction);
+    const subject = await this.sequelize.transaction(async (transaction) => {
       const contentTypes = await this.resolveContentTypes(dto.contentTypeCodes, transaction);
       await this.assertActiveSemester(dto.semester, transaction);
       await this.assertActiveProgram(dto.programName, transaction);
@@ -89,11 +108,43 @@ export class MateriasService {
         } as StatusHistory,
         { transaction },
       );
-      await this.notificationsService.logSubjectCreated(subject, actor, transaction);
       this.logger.log(`Materia created: subjectId=${subject.id} creatorUserId=${user.sub} semester=${subject.semester} program="${subject.programName}"`);
 
-      return this.findOne(subject.id, user, transaction);
+      return subject;
     });
+
+    try {
+      const transferredFiles = await this.transferService.copyDriveFolderToMega({
+        driveFolderUrl: subject.driveFolderUrl,
+        subjectId: subject.id,
+        subjectName: subject.name,
+        transferId: dto.transferId,
+      });
+      await this.subjectTransferFileModel.bulkCreate(
+        transferredFiles.map(
+          (file) =>
+            ({
+              subjectId: subject.id,
+              fileName: file.fileName,
+              filePath: file.filePath,
+              megaUrl: file.megaUrl,
+              sizeBytes: file.sizeBytes ?? null,
+              mimeType: file.mimeType ?? null,
+            }) as SubjectTransferFile,
+        ),
+      );
+      await subject.update({ cdigitalUrl: transferredFiles[0]?.megaUrl ?? null });
+      const actor = await this.getUserOrFail(user.sub);
+      await this.notificationsService.logSubjectCreated(subject, actor);
+      this.logger.log(`Materia MEGA files generated: subjectId=${subject.id} fileCount=${transferredFiles.length}`);
+      return this.findOne(subject.id, user);
+    } catch (error) {
+      if (dto.transferId) {
+        this.transferService.failProgress(dto.transferId, error instanceof Error ? error.message : "Transfer failed");
+      }
+      await this.rollbackFailedCreate(subject.id);
+      throw error;
+    }
   }
 
   async findAll(query: QuerySubjectsDto, user: AuthUser) {
@@ -208,6 +259,10 @@ export class MateriasService {
     });
   }
 
+  transferProgress(transferId: string) {
+    return this.transferService.progress(transferId);
+  }
+
   async findLmsInbox(query: QuerySubjectsDto) {
     return this.subjectModel.findAll({
       where: {
@@ -227,6 +282,70 @@ export class MateriasService {
       } as never,
       include: this.defaultInclude(),
       order: [["completedAt", "DESC"]],
+    });
+  }
+
+  async uploadHistory(query: QuerySubjectsDto, user: AuthUser) {
+    const subjects = await this.subjectModel.findAll({
+      where: this.buildAuthorizedWhere(query, user) as never,
+      include: [
+        { model: User, as: "createdBy", attributes: ["id", "email", "fullName", "role"] },
+        { model: User, as: "assignedLmsUser", attributes: ["id", "email", "fullName", "role"] },
+        { model: SubjectTransferFile, as: "transferFiles" },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    return subjects.map((subject) => {
+      const files = subject.transferFiles ?? [];
+      const uploadedAtValues = files.map((file) => file.createdAt).filter(Boolean);
+      const lastUploadedAt = uploadedAtValues.length > 0
+        ? new Date(Math.max(...uploadedAtValues.map((date) => date.getTime())))
+        : null;
+      const firstUploadedAt = uploadedAtValues.length > 0
+        ? new Date(Math.min(...uploadedAtValues.map((date) => date.getTime())))
+        : null;
+      const rootFolders = Array.from(new Set(files.map((file) => file.filePath?.[0]).filter(Boolean))).sort();
+      const folderKeys = new Set(
+        files.flatMap((file) =>
+          (file.filePath ?? []).map((_, index, path) => path.slice(0, index + 1).join("/")),
+        ),
+      );
+
+      return {
+        subjectId: subject.id,
+        subjectName: subject.name,
+        semester: subject.semester,
+        academicLevel: subject.academicLevel,
+        programName: subject.programName,
+        currentStatus: subject.currentStatus,
+        createdAt: subject.createdAt,
+        completedAt: subject.completedAt,
+        reviewedAt: subject.reviewedAt,
+        createdBy: subject.createdBy
+          ? {
+              id: subject.createdBy.id,
+              email: subject.createdBy.email,
+              fullName: subject.createdBy.fullName,
+              role: subject.createdBy.role,
+            }
+          : null,
+        assignedLmsUser: subject.assignedLmsUser
+          ? {
+              id: subject.assignedLmsUser.id,
+              email: subject.assignedLmsUser.email,
+              fullName: subject.assignedLmsUser.fullName,
+              role: subject.assignedLmsUser.role,
+            }
+          : null,
+        fileCount: files.length,
+        folderCount: folderKeys.size,
+        totalBytes: files.reduce((sum, file) => sum + Number(file.sizeBytes ?? 0), 0),
+        firstUploadedAt,
+        lastUploadedAt,
+        rootFolders: rootFolders.slice(0, 6),
+        hasFiles: files.length > 0,
+      };
     });
   }
 
@@ -334,9 +453,9 @@ export class MateriasService {
       }
 
       if (dto.newStatus === SubjectStatus.APROBADO) {
-        const cdigitalUrl = dto.cdigitalUrl?.trim();
+        const cdigitalUrl = dto.cdigitalUrl?.trim() ?? subject.cdigitalUrl?.trim();
         if (!cdigitalUrl) {
-          throw new BadRequestException("C Digital URL is required to approve the subject");
+          throw new BadRequestException("MEGA URL is required to approve the subject");
         }
         patch.cdigitalUrl = cdigitalUrl;
         patch.completedAt = new Date();
@@ -409,6 +528,68 @@ export class MateriasService {
       include: [{ model: User, as: "author", attributes: ["id", "email", "fullName", "role"] }],
       order: [["createdAt", "ASC"]],
     });
+  }
+
+  async files(id: number, user: AuthUser) {
+    await this.findOne(id, user);
+    return this.subjectTransferFileModel.findAll({
+      where: { subjectId: id },
+      order: [
+        ["filePath", "ASC"],
+        ["fileName", "ASC"],
+      ],
+    });
+  }
+
+  async downloadFile(id: number, fileId: number, user: AuthUser, response: Response, inline = false) {
+    const subject = await this.findOne(id, user);
+    const storedFile = await this.subjectTransferFileModel.findOne({
+      where: { id: fileId, subjectId: id },
+    });
+    if (!storedFile) throw new NotFoundException("Transfer file not found");
+
+    const driveFile = await this.findDriveFileForStoredFile(subject, storedFile);
+    const download = await this.driveService.download(driveFile);
+    const filename = this.safeDownloadName(download.filename);
+
+    if (inline && this.isOfficePreviewFile(filename)) {
+      return this.previewOfficeAsPdf(download.stream, filename, response);
+    }
+
+    response.setHeader("Content-Type", download.mimeType ?? storedFile.mimeType ?? "application/octet-stream");
+    response.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${filename}"`);
+    if (download.size) response.setHeader("Content-Length", String(download.size));
+    download.stream.pipe(response);
+  }
+
+  async downloadZip(id: number, user: AuthUser, response: Response) {
+    const subject = await this.findOne(id, user);
+    const files = await this.driveService.listFilesFromFolderUrl(subject.driveFolderUrl);
+    if (files.length === 0) {
+      throw new BadRequestException("Drive folder has no downloadable files");
+    }
+
+    const archive = archiver("zip", {
+      zlib: { level: 6 },
+      forceZip64: true,
+    });
+    const filename = `${this.safeDownloadName(subject.name)}-${subject.id}.zip`;
+
+    response.setHeader("Content-Type", "application/zip");
+    response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    archive.on("error", (error: Error) => {
+      this.logger.error(`ZIP generation failed: subjectId=${id} error=${error.message}`);
+      response.destroy(error);
+    });
+    archive.pipe(response);
+
+    for (const file of files) {
+      const download = await this.driveService.download(file);
+      archive.append(download.stream, { name: this.zipPath(file, download.filename) });
+    }
+
+    this.logger.log(`ZIP download generated: subjectId=${id} fileCount=${files.length}`);
+    await archive.finalize();
   }
 
   async addComment(id: number, dto: CreateCommentDto, user: AuthUser) {
@@ -585,5 +766,112 @@ export class MateriasService {
     if (status === SubjectStatus.REQUIERE_AJUSTES) return CommentType.DEVOLUCION;
     if (status === SubjectStatus.APROBADO) return CommentType.CIERRE;
     return CommentType.GENERAL;
+  }
+
+  private async rollbackFailedCreate(subjectId: number) {
+    await this.sequelize.transaction(async (transaction) => {
+      await this.commentModel.destroy({ where: { subjectId }, transaction });
+      await this.statusHistoryModel.destroy({ where: { subjectId }, transaction });
+      await this.subjectTransferFileModel.destroy({ where: { subjectId }, transaction });
+      await this.subjectContentTypeModel.destroy({ where: { subjectId }, transaction });
+      await this.subjectModel.destroy({ where: { id: subjectId }, transaction });
+    });
+    this.logger.warn(`Materia creation rolled back after transfer failure: subjectId=${subjectId}`);
+  }
+
+  private async findDriveFileForStoredFile(subject: Subject, storedFile: SubjectTransferFile) {
+    const driveFiles = await this.driveService.listFilesFromFolderUrl(subject.driveFolderUrl);
+    const match = driveFiles.find((file) =>
+      this.driveService.samePath(file.path, storedFile.filePath ?? []) &&
+      this.driveService.resolveDownloadFilename(file) === storedFile.fileName,
+    );
+    if (!match) {
+      throw new NotFoundException("Original Drive file could not be resolved for download");
+    }
+    return match;
+  }
+
+  private zipPath(file: DriveTransferFile, filename: string) {
+    return [...file.path, filename].map((part) => this.safeZipSegment(part)).join("/");
+  }
+
+  private safeZipSegment(value: string) {
+    return value
+      .replace(/[<>:"\\|?*\u0000-\u001F]/g, "-")
+      .replace(/\.\.+/g, ".")
+      .trim() || "archivo";
+  }
+
+  private safeDownloadName(value: string) {
+    return this.safeZipSegment(value).replace(/[/]/g, "-");
+  }
+
+  private isOfficePreviewFile(filename: string) {
+    return OFFICE_PREVIEW_EXTENSIONS.has(extname(filename).toLowerCase());
+  }
+
+  private async previewOfficeAsPdf(stream: NodeJS.ReadableStream, filename: string, response: Response) {
+    const workDir = await mkdtemp(join(tmpdir(), "carga-lms-preview-"));
+    const inputDir = join(workDir, "input");
+    const outputDir = join(workDir, "output");
+    await mkdir(inputDir, { recursive: true });
+    await mkdir(outputDir, { recursive: true });
+
+    const inputPath = join(inputDir, filename);
+    await pipeline(stream, createWriteStream(inputPath));
+
+    try {
+      await execFileAsync(this.resolveLibreOfficeBinary(), [
+        "--headless",
+        "--nologo",
+        "--nofirststartwizard",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        outputDir,
+        inputPath,
+      ]);
+    } catch (error) {
+      await rm(workDir, { recursive: true, force: true });
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Office preview conversion failed: filename="${filename}" error=${message}`);
+      if (message.includes("ENOENT")) {
+        throw new BadRequestException(
+          "LibreOffice no esta instalado o no esta disponible en PATH. Instala LibreOffice o configura LIBREOFFICE_BIN para generar vistas previas Office.",
+        );
+      }
+      throw new BadRequestException("No fue posible generar la vista previa PDF de este archivo Office.");
+    }
+
+    const outputFiles = await readdir(outputDir);
+    const pdfFile = outputFiles.find((file) => file.toLowerCase().endsWith(".pdf"));
+    if (!pdfFile) {
+      await rm(workDir, { recursive: true, force: true });
+      throw new BadRequestException("No fue posible generar la vista previa PDF de este archivo Office.");
+    }
+
+    const pdfName = `${basename(filename, extname(filename))}.pdf`;
+    response.setHeader("Content-Type", "application/pdf");
+    response.setHeader("Content-Disposition", `inline; filename="${this.safeDownloadName(pdfName)}"`);
+    response.on("finish", () => {
+      void rm(workDir, { recursive: true, force: true });
+    });
+    response.sendFile(join(outputDir, pdfFile), (error) => {
+      if (error) {
+        void rm(workDir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  private resolveLibreOfficeBinary() {
+    const configured = process.env.LIBREOFFICE_BIN?.trim();
+    if (configured) return configured;
+
+    const windowsCandidates = [
+      "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+      "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
+    ];
+    const windowsBinary = windowsCandidates.find((candidate) => existsSync(candidate));
+    return windowsBinary ?? "soffice";
   }
 }
