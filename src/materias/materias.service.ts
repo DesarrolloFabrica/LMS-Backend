@@ -12,6 +12,7 @@ import { col, fn, literal, Op, Transaction, WhereOptions } from "sequelize";
 import { Sequelize } from "sequelize-typescript";
 import { promisify } from "node:util";
 import { AuditService, FieldChange } from "@/audit/audit.service";
+import { AuditLog } from "@/audit/models/audit-log.model";
 import { AuthUser } from "@/auth/types/auth-user.type";
 import { CommentType } from "@/common/enums/comment-type.enum";
 import { ContentTypeCode } from "@/common/enums/content-type-code.enum";
@@ -28,8 +29,10 @@ import { UpdateSubjectStatusDto } from "@/materias/dto/update-subject-status.dto
 import { Comment } from "@/materias/models/comment.model";
 import { StatusHistory } from "@/materias/models/status-history.model";
 import { SubjectContentType } from "@/materias/models/subject-content-type.model";
+import { SubjectTimelineEvent } from "@/materias/models/subject-timeline-event.model";
 import { SubjectTransferFile } from "@/materias/models/subject-transfer-file.model";
 import { Subject } from "@/materias/models/subject.model";
+import { NotificationLog } from "@/notifications/models/notification-log.model";
 import { NotificationsService } from "@/notifications/notifications.service";
 import { DriveService, DriveTransferFile } from "@/transfers/drive.service";
 import { TransferService } from "@/transfers/transfer.service";
@@ -52,6 +55,18 @@ const VALID_TRANSITIONS: Record<SubjectStatus, SubjectStatus[]> = {
 const execFileAsync = promisify(execFile);
 const OFFICE_PREVIEW_EXTENSIONS = new Set([".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx"]);
 
+type TimelineActor = Pick<User, "id" | "email" | "fullName" | "role"> | null;
+
+type TimelineEntry = {
+  id: string;
+  type: string;
+  title: string;
+  description?: string | null;
+  actor?: TimelineActor;
+  createdAt: Date;
+  metadata?: Record<string, unknown> | null;
+};
+
 @Injectable()
 export class MateriasService {
   private readonly logger = new Logger(MateriasService.name);
@@ -65,7 +80,10 @@ export class MateriasService {
     @InjectModel(StatusHistory) private readonly statusHistoryModel: typeof StatusHistory,
     @InjectModel(SubjectContentType) private readonly subjectContentTypeModel: typeof SubjectContentType,
     @InjectModel(SubjectTransferFile) private readonly subjectTransferFileModel: typeof SubjectTransferFile,
+    @InjectModel(SubjectTimelineEvent) private readonly subjectTimelineEventModel: typeof SubjectTimelineEvent,
     @InjectModel(Comment) private readonly commentModel: typeof Comment,
+    @InjectModel(NotificationLog) private readonly notificationLogModel: typeof NotificationLog,
+    @InjectModel(AuditLog) private readonly auditLogModel: typeof AuditLog,
     @InjectModel(User) private readonly userModel: typeof User,
     private readonly notificationsService: NotificationsService,
     private readonly auditService: AuditService,
@@ -108,6 +126,21 @@ export class MateriasService {
         } as StatusHistory,
         { transaction },
       );
+      await this.subjectTimelineEventModel.create(
+        {
+          subjectId: subject.id,
+          eventType: "SUBJECT_CREATED",
+          title: "Solicitud creada",
+          description: "Fabrica registro la solicitud y la envio a LMS.",
+          actorUserId: user.sub,
+          metadata: {
+            status: SubjectStatus.PENDIENTE,
+            semester: subject.semester,
+            programName: subject.programName,
+          },
+        } as Partial<SubjectTimelineEvent> as SubjectTimelineEvent,
+        { transaction },
+      );
       this.logger.log(`Materia created: subjectId=${subject.id} creatorUserId=${user.sub} semester=${subject.semester} program="${subject.programName}"`);
 
       return subject;
@@ -134,6 +167,17 @@ export class MateriasService {
         ),
       );
       await subject.update({ cdigitalUrl: transferredFiles[0]?.megaUrl ?? null });
+      await this.subjectTimelineEventModel.create({
+        subjectId: subject.id,
+        eventType: "TRANSFER_COMPLETED",
+        title: "Material transferido a MEGA",
+        description: `${transferredFiles.length} archivo(s) quedaron disponibles para revision.`,
+        actorUserId: user.sub,
+        metadata: {
+          fileCount: transferredFiles.length,
+          totalBytes: transferredFiles.reduce((sum, file) => sum + Number(file.sizeBytes ?? 0), 0),
+        },
+      } as Partial<SubjectTimelineEvent> as SubjectTimelineEvent);
       const actor = await this.getUserOrFail(user.sub);
       await this.notificationsService.logSubjectCreated(subject, actor);
       this.logger.log(`Materia MEGA files generated: subjectId=${subject.id} fileCount=${transferredFiles.length}`);
@@ -530,6 +574,133 @@ export class MateriasService {
     });
   }
 
+  async timeline(id: number, user: AuthUser) {
+    const subject = await this.findOne(id, user);
+    const [events, history, comments, notifications, auditLogs, transferFiles] = await Promise.all([
+      this.subjectTimelineEventModel.findAll({
+        where: { subjectId: id },
+        include: [{ model: User, as: "actor", attributes: ["id", "email", "fullName", "role"] }],
+        order: [["createdAt", "ASC"]],
+      }),
+      this.statusHistoryModel.findAll({
+        where: { subjectId: id },
+        include: [{ model: User, as: "changedByUser", attributes: ["id", "email", "fullName", "role"] }],
+        order: [["createdAt", "ASC"]],
+      }),
+      this.commentModel.findAll({
+        where: { subjectId: id },
+        include: [{ model: User, as: "author", attributes: ["id", "email", "fullName", "role"] }],
+        order: [["createdAt", "ASC"]],
+      }),
+      this.notificationLogModel.findAll({
+        where: { subjectId: id },
+        order: [["createdAt", "ASC"]],
+      }),
+      this.auditLogModel.findAll({
+        where: { subjectId: id },
+        include: [{ model: User, as: "changedByUser", attributes: ["id", "email", "fullName", "role"] }],
+        order: [["changedAt", "ASC"]],
+      }),
+      this.subjectTransferFileModel.findAll({
+        where: { subjectId: id },
+        order: [["createdAt", "ASC"]],
+      }),
+    ]);
+
+    const transferUploadedAt = transferFiles
+      .map((file) => file.createdAt)
+      .filter(Boolean)
+      .sort((a, b) => a.getTime() - b.getTime())
+      .at(-1);
+    const hasSubjectCreatedEvent = events.some((event) => event.eventType === "SUBJECT_CREATED");
+
+    const entries: TimelineEntry[] = [
+      ...events.map((event) => ({
+        id: `event-${event.id}`,
+        type: event.eventType,
+        title: event.title,
+        description: event.description,
+        actor: this.timelineActor(event.actor),
+        createdAt: event.createdAt,
+        metadata: event.metadata ?? null,
+      })),
+      ...history
+        .filter((item) => !(hasSubjectCreatedEvent && !item.previousStatus && item.newStatus === SubjectStatus.PENDIENTE))
+        .map((item) => ({
+          id: `status-${item.id}`,
+          type: "STATUS_CHANGED",
+          title: this.statusTimelineTitle(item.previousStatus ?? null, item.newStatus),
+          description: item.observation ?? null,
+          actor: this.timelineActor(item.changedByUser),
+          createdAt: item.createdAt,
+          metadata: {
+            previousStatus: item.previousStatus ?? null,
+            newStatus: item.newStatus,
+          },
+        })),
+      ...comments.map((comment) => ({
+        id: `comment-${comment.id}`,
+        type: "COMMENT_ADDED",
+        title: this.commentTimelineTitle(comment.commentType),
+        description: comment.content,
+        actor: this.timelineActor(comment.author),
+        createdAt: comment.createdAt,
+        metadata: {
+          commentType: comment.commentType,
+        },
+      })),
+      ...notifications.map((notification) => ({
+        id: `notification-${notification.id}`,
+        type: "NOTIFICATION",
+        title: this.notificationTimelineTitle(notification.notificationType),
+        description: `${notification.subjectLine} - ${this.notificationStatusLabel(notification.status)}`,
+        actor: null,
+        createdAt: notification.sentAt ?? notification.createdAt,
+        metadata: {
+          notificationType: notification.notificationType,
+          recipientEmail: notification.recipientEmail,
+          status: notification.status,
+          errorMessage: notification.errorMessage ?? null,
+        },
+      })),
+      ...auditLogs.map((log) => ({
+        id: `audit-${log.id}`,
+        type: "DATA_UPDATED",
+        title: `Campo actualizado: ${this.fieldLabel(log.fieldName)}`,
+        description: this.auditDescription(log.oldValue, log.newValue),
+        actor: this.timelineActor(log.changedByUser),
+        createdAt: log.changedAt,
+        metadata: {
+          fieldName: log.fieldName,
+          oldValue: log.oldValue ?? null,
+          newValue: log.newValue ?? null,
+        },
+      })),
+    ];
+
+    if (transferFiles.length > 0 && transferUploadedAt && !events.some((event) => event.eventType === "TRANSFER_COMPLETED")) {
+      entries.push({
+        id: `transfer-summary-${subject.id}`,
+        type: "TRANSFER_COMPLETED",
+        title: "Material transferido a MEGA",
+        description: `${transferFiles.length} archivo(s) quedaron disponibles para revision.`,
+        actor: this.timelineActor(subject.createdBy),
+        createdAt: transferUploadedAt,
+        metadata: {
+          fileCount: transferFiles.length,
+          totalBytes: transferFiles.reduce((sum, file) => sum + Number(file.sizeBytes ?? 0), 0),
+        },
+      });
+    }
+
+    return entries
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .map((entry) => ({
+        ...entry,
+        createdAt: entry.createdAt.toISOString(),
+      }));
+  }
+
   async files(id: number, user: AuthUser) {
     await this.findOne(id, user);
     return this.subjectTransferFileModel.findAll({
@@ -556,6 +727,16 @@ export class MateriasService {
       return this.previewOfficeAsPdf(download.stream, filename, response);
     }
 
+    if (!inline) {
+      await this.recordTimelineEvent(subject.id, "DOWNLOAD_FILE", "Archivo descargado", `${filename} fue descargado desde la plataforma.`, user.sub, {
+        fileId: storedFile.id,
+        fileName: filename,
+        filePath: storedFile.filePath ?? [],
+        sizeBytes: storedFile.sizeBytes ?? download.size ?? null,
+      });
+      this.logger.log(`File download started: subjectId=${id} fileId=${fileId} actorUserId=${user.sub} filename="${filename}"`);
+    }
+
     response.setHeader("Content-Type", download.mimeType ?? storedFile.mimeType ?? "application/octet-stream");
     response.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${filename}"`);
     if (download.size) response.setHeader("Content-Length", String(download.size));
@@ -577,6 +758,10 @@ export class MateriasService {
 
     response.setHeader("Content-Type", "application/zip");
     response.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    await this.recordTimelineEvent(subject.id, "DOWNLOAD_ZIP", "Descarga masiva generada", "Se descargo un ZIP con todo el material de la solicitud.", user.sub, {
+      fileCount: files.length,
+      fileName: filename,
+    });
     archive.on("error", (error: Error) => {
       this.logger.error(`ZIP generation failed: subjectId=${id} error=${error.message}`);
       response.destroy(error);
@@ -612,6 +797,93 @@ export class MateriasService {
       this.logger.log(`Comment added: subjectId=${id} actorUserId=${user.sub} commentType=${dto.commentType ?? CommentType.GENERAL}`);
       return this.comments(id, user);
     });
+  }
+
+  private async recordTimelineEvent(
+    subjectId: number,
+    eventType: string,
+    title: string,
+    description: string,
+    actorUserId?: number,
+    metadata?: Record<string, unknown>,
+  ) {
+    return this.subjectTimelineEventModel.create({
+      subjectId,
+      eventType,
+      title,
+      description,
+      actorUserId: actorUserId ?? null,
+      metadata: metadata ?? null,
+    } as Partial<SubjectTimelineEvent> as SubjectTimelineEvent);
+  }
+
+  private timelineActor(user?: User | null): TimelineActor {
+    if (!user) return null;
+    return {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+    };
+  }
+
+  private statusTimelineTitle(previousStatus: SubjectStatus | null, newStatus: SubjectStatus) {
+    if (!previousStatus) return "Solicitud enviada a LMS";
+    if (newStatus === SubjectStatus.REQUIERE_AJUSTES) return "Solicitud devuelta para ajustes";
+    if (newStatus === SubjectStatus.PENDIENTE && previousStatus === SubjectStatus.REQUIERE_AJUSTES) {
+      return "Correcciones notificadas a LMS";
+    }
+    if (newStatus === SubjectStatus.APROBADO) return "Solicitud aprobada";
+    return "Estado actualizado";
+  }
+
+  private commentTimelineTitle(commentType: CommentType) {
+    if (commentType === CommentType.DEVOLUCION) return "Observacion de ajustes registrada";
+    if (commentType === CommentType.CIERRE) return "Observacion de cierre registrada";
+    if (commentType === CommentType.ERROR) return "Incidencia registrada";
+    return "Comentario registrado";
+  }
+
+  private notificationTimelineTitle(notificationType: string) {
+    const labels: Record<string, string> = {
+      SUBJECT_CREATED: "Notificacion enviada a LMS",
+      SUBJECT_RETURNED: "Notificacion de ajustes enviada",
+      SUBJECT_CORRECTIONS_READY: "Notificacion de correcciones enviada",
+      SUBJECT_COMPLETED: "Notificacion de aprobacion enviada",
+      SUBJECT_STATUS_UPDATED: "Notificacion de estado enviada",
+      SUBJECT_ERROR: "Notificacion de error registrada",
+    };
+    return labels[notificationType] ?? "Notificacion registrada";
+  }
+
+  private notificationStatusLabel(status: string) {
+    const labels: Record<string, string> = {
+      PENDING: "pendiente de envio",
+      SENT: "enviada",
+      FAILED: "fallida",
+      SKIPPED: "omitida",
+    };
+    return labels[status] ?? status.toLowerCase();
+  }
+
+  private fieldLabel(fieldName: string) {
+    const labels: Record<string, string> = {
+      name: "materia",
+      semester: "semestre",
+      academicLevel: "nivel academico",
+      programName: "programa",
+      contentDescription: "descripcion",
+      driveFolderUrl: "enlace Drive",
+      contentTypeCodes: "tipos de contenido",
+    };
+    return labels[fieldName] ?? fieldName;
+  }
+
+  private auditDescription(oldValue?: string | null, newValue?: string | null) {
+    if (!oldValue && newValue) return `Nuevo valor: ${newValue}`;
+    if (oldValue && !newValue) return `Valor anterior: ${oldValue}`;
+    if (!oldValue && !newValue) return null;
+    return `Antes: ${oldValue} | Ahora: ${newValue}`;
   }
 
   private buildWhere(query: QuerySubjectsDto): SubjectWhere {

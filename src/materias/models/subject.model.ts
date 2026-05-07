@@ -21,6 +21,7 @@ import { AuditLog } from "@/audit/models/audit-log.model";
 import { Comment } from "@/materias/models/comment.model";
 import { StatusHistory } from "@/materias/models/status-history.model";
 import { SubjectContentType } from "@/materias/models/subject-content-type.model";
+import { SubjectTimelineEvent } from "@/materias/models/subject-timeline-event.model";
 import { SubjectTransferFile } from "@/materias/models/subject-transfer-file.model";
 import { User } from "@/users/models/user.model";
 
@@ -110,4 +111,7 @@ export class Subject extends Model<Subject> {
 
   @HasMany(() => SubjectTransferFile)
   declare transferFiles?: SubjectTransferFile[];
+
+  @HasMany(() => SubjectTimelineEvent)
+  declare timelineEvents?: SubjectTimelineEvent[];
 }
