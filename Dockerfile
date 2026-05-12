@@ -17,6 +17,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
 
+RUN apk add --no-cache libreoffice ttf-dejavu font-noto
+
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 

@@ -1,4 +1,4 @@
-import { ArrayMinSize, IsArray, IsEnum, IsString, IsUrl, MaxLength, MinLength } from "class-validator";
+import { ArrayMinSize, IsArray, IsEnum, IsOptional, IsString, IsUrl, IsUUID, MaxLength, MinLength } from "class-validator";
 import { AcademicLevel } from "@/common/enums/academic-level.enum";
 import { ContentTypeCode } from "@/common/enums/content-type-code.enum";
 
@@ -32,4 +32,8 @@ export class CreateSubjectDto {
   @ArrayMinSize(1)
   @IsEnum(ContentTypeCode, { each: true })
   contentTypeCodes: ContentTypeCode[];
+
+  @IsOptional()
+  @IsUUID()
+  transferId?: string;
 }
