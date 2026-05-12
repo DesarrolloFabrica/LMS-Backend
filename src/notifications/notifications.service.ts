@@ -14,6 +14,7 @@ type NotificationPayload = {
   subjectId: number;
   notificationType: NotificationType;
   recipientEmail: string;
+  ccEmails?: string[];
   subjectLine: string;
   bodySnapshot: string;
   htmlBody: string;
@@ -24,6 +25,12 @@ type EmailAction = {
   href: string;
   variant?: "primary" | "secondary";
 };
+
+const SUBJECT_CREATED_AND_APPROVED_CC = [
+  "fabricadecontenidos@cun.edu.co",
+  "haider_bello@cun.edu.co",
+  "juan_ninop@cun.edu.co",
+];
 
 @Injectable()
 export class NotificationsService {
@@ -44,7 +51,6 @@ export class NotificationsService {
       `Semestre: ${subject.semester}`,
       subject.programName ? `Programa: ${subject.programName}` : undefined,
       `Registrada por: ${actor.fullName} <${actor.email}>`,
-      `Drive: ${subject.driveFolderUrl}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -54,6 +60,7 @@ export class NotificationsService {
         subjectId: subject.id,
         notificationType: NotificationType.SUBJECT_CREATED,
         recipientEmail,
+        ccEmails: SUBJECT_CREATED_AND_APPROVED_CC,
         subjectLine: "[Control LMS] Nueva materia pendiente",
         bodySnapshot: textBody,
         htmlBody: this.renderSubjectEmail({
@@ -66,8 +73,7 @@ export class NotificationsService {
           actorLabel: "Registrada por",
           actorValue: `${actor.fullName} <${actor.email}>`,
           actions: [
-            { label: "Abrir bandeja LMS", href: this.appUrl("/review"), variant: "primary" },
-            { label: "Ver carpeta Drive", href: subject.driveFolderUrl, variant: "secondary" },
+            { label: "Abrir solicitud", href: this.subjectUrl(subject), variant: "primary" },
           ],
         }),
       },
@@ -80,8 +86,6 @@ export class NotificationsService {
       `Materia: ${subject.name}`,
       `Estado: ${this.statusLabel(subject.currentStatus)}`,
       observation ? `Observacion: ${observation}` : undefined,
-      subject.cdigitalUrl ? `C Digital: ${subject.cdigitalUrl}` : undefined,
-      `Drive: ${subject.driveFolderUrl}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -91,6 +95,7 @@ export class NotificationsService {
         subjectId: subject.id,
         notificationType: this.typeForStatus(subject.currentStatus),
         recipientEmail: creatorEmail,
+        ccEmails: subject.currentStatus === SubjectStatus.APROBADO ? SUBJECT_CREATED_AND_APPROVED_CC : undefined,
         subjectLine: this.subjectLineForStatus(subject.currentStatus),
         bodySnapshot: textBody,
         htmlBody: this.renderSubjectEmail({
@@ -102,11 +107,7 @@ export class NotificationsService {
           observation,
           recipientHint: "Fabrica de Contenido",
           actions: [
-            { label: "Abrir plataforma", href: this.appUrl("/dashboard#drive-submission-form"), variant: "primary" },
-            ...(subject.cdigitalUrl
-              ? [{ label: "Ver en C Digital", href: subject.cdigitalUrl, variant: "secondary" } as EmailAction]
-              : []),
-            { label: "Ver carpeta Drive", href: subject.driveFolderUrl, variant: "secondary" },
+            { label: "Abrir solicitud", href: this.subjectUrl(subject), variant: "primary" },
           ],
         }),
       },
@@ -129,7 +130,6 @@ export class NotificationsService {
       subject.programName ? `Programa: ${subject.programName}` : undefined,
       observation ? `Ajustes solicitados: ${observation}` : undefined,
       `Devuelta por: ${actor.fullName} <${actor.email}>`,
-      `Drive: ${subject.driveFolderUrl}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -152,8 +152,7 @@ export class NotificationsService {
           actorLabel: "Devuelta por",
           actorValue: `${actor.fullName} <${actor.email}>`,
           actions: [
-            { label: "Revisar ajustes", href: this.appUrl("/dashboard#drive-submission-form"), variant: "primary" },
-            { label: "Ver carpeta Drive", href: subject.driveFolderUrl, variant: "secondary" },
+            { label: "Abrir solicitud", href: this.subjectUrl(subject), variant: "primary" },
           ],
         }),
       },
@@ -170,7 +169,6 @@ export class NotificationsService {
       `Semestre: ${subject.semester}`,
       subject.programName ? `Programa: ${subject.programName}` : undefined,
       `Correcciones notificadas por: ${actor.fullName} <${actor.email}>`,
-      `Drive: ${subject.driveFolderUrl}`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -192,8 +190,7 @@ export class NotificationsService {
           actorLabel: "Corregida por",
           actorValue: `${actor.fullName} <${actor.email}>`,
           actions: [
-            { label: "Abrir bandeja LMS", href: this.appUrl("/review"), variant: "primary" },
-            { label: "Ver carpeta Drive", href: subject.driveFolderUrl, variant: "secondary" },
+            { label: "Abrir solicitud", href: this.subjectUrl(subject), variant: "primary" },
           ],
         }),
       },
@@ -223,6 +220,7 @@ export class NotificationsService {
       await this.getTransporter().sendMail({
         from: this.config.get<string>("notifications.smtpFrom"),
         to: input.recipientEmail,
+        cc: this.ccEmails(input.ccEmails, input.recipientEmail),
         subject: input.subjectLine,
         text: input.bodySnapshot,
         html: htmlBody,
@@ -255,10 +253,11 @@ export class NotificationsService {
 
   private getTransporter() {
     if (!this.transporter) {
+      const host = this.config.get<string>("notifications.smtpHost");
       const user = this.config.getOrThrow<string>("notifications.smtpUser");
-      const pass = this.config.getOrThrow<string>("notifications.smtpPass");
+      const pass = this.normalizedSmtpPassword(this.config.getOrThrow<string>("notifications.smtpPass"), host);
       this.transporter = nodemailer.createTransport({
-        host: this.config.get<string>("notifications.smtpHost"),
+        host,
         port: this.config.getOrThrow<number>("notifications.smtpPort"),
         secure: this.config.getOrThrow<boolean>("notifications.smtpSecure"),
         auth: user && pass ? { user, pass } : undefined,
@@ -269,6 +268,20 @@ export class NotificationsService {
     }
 
     return this.transporter;
+  }
+
+  private normalizedSmtpPassword(password: string, host?: string) {
+    return host === "smtp.gmail.com" ? password.replace(/\s+/g, "") : password;
+  }
+
+  private ccEmails(ccEmails: string[] | undefined, recipientEmail: string) {
+    if (!ccEmails?.length) return undefined;
+
+    const recipient = recipientEmail.toLowerCase();
+    const unique = Array.from(new Set(ccEmails.map((email) => email.trim().toLowerCase())))
+      .filter((email) => email && email !== recipient);
+
+    return unique.length > 0 ? unique : undefined;
   }
 
   private getMissingConfigurationReason() {
@@ -421,6 +434,10 @@ export class NotificationsService {
   private appUrl(path: string) {
     const baseUrl = this.config.getOrThrow<string>("notifications.appBaseUrl");
     return `${baseUrl.replace(/\/$/, "")}${path}`;
+  }
+
+  private subjectUrl(subject: Subject) {
+    return this.appUrl(`/review/${subject.id}`);
   }
 
   private statusLabel(status: SubjectStatus) {
