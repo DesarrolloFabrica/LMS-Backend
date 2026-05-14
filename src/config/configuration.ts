@@ -25,12 +25,10 @@ export default () => ({
     allowedDomain: optionalEnv("GOOGLE_ALLOWED_DOMAIN"),
   },
   drive: {
-    serviceAccountJson: requiredEnv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON"),
-  },
-  mega: {
-    email: requiredEnv("MEGA_EMAIL"),
-    password: requiredEnv("MEGA_PASSWORD"),
-    rootFolderName: optionalEnv("MEGA_ROOT_FOLDER_NAME"),
+    operatorClientId: requiredEnv("GOOGLE_DRIVE_OPERATOR_CLIENT_ID"),
+    operatorClientSecret: requiredEnv("GOOGLE_DRIVE_OPERATOR_CLIENT_SECRET"),
+    operatorRefreshToken: requiredEnv("GOOGLE_DRIVE_OPERATOR_REFRESH_TOKEN"),
+    destinationRootFolderId: requiredEnv("GOOGLE_DRIVE_DESTINATION_ROOT_FOLDER_ID"),
   },
   notifications: {
     lmsEmail: requiredEnv("LMS_NOTIFICATION_EMAIL"),

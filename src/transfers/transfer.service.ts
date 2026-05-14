@@ -1,6 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { DriveService } from "@/transfers/drive.service";
-import { MegaService } from "@/transfers/mega.service";
 import { TransferProgressService } from "@/transfers/transfer-progress.service";
 
 @Injectable()
@@ -9,11 +8,10 @@ export class TransferService {
 
   constructor(
     private readonly driveService: DriveService,
-    private readonly megaService: MegaService,
     private readonly progressService: TransferProgressService,
   ) {}
 
-  async copyDriveFolderToMega(input: { driveFolderUrl: string; subjectId: number; subjectName: string; transferId?: string }) {
+  async copyDriveFolderToReviewDrive(input: { driveFolderUrl: string; subjectId: number; subjectName: string; transferId?: string }) {
     if (input.transferId) this.progressService.start(input.transferId);
     const files = await this.driveService.listFilesFromFolderUrl(input.driveFolderUrl);
     if (files.length === 0) {
@@ -22,22 +20,13 @@ export class TransferService {
     const totalBytes = files.reduce((sum, file) => sum + (file.size ?? 0), 0);
     if (input.transferId) this.progressService.setTotal(input.transferId, files.length, totalBytes);
 
-    this.logger.log(`Drive to MEGA transfer started: subjectId=${input.subjectId} fileCount=${files.length} totalBytes=${totalBytes}`);
-
-    const transferFiles = files.map((file) => ({
-      filename: this.driveService.resolveDownloadFilename(file),
-      path: file.path,
-      size: file.size,
-      mimeType: file.mimeType,
-      openStream: async () => {
-        if (input.transferId) this.progressService.fileStarted(input.transferId, this.driveService.resolveDownloadFilename(file));
-        const download = await this.driveService.download(file);
-        return download.stream;
-      },
-    }));
-
     const folderName = this.folderName(input.subjectId, input.subjectName);
-    const transferredFiles = await this.megaService.uploadFolder(folderName, transferFiles, {
+    const targetFolder = await this.driveService.createDestinationFolder(folderName);
+    this.logger.log(
+      `Drive to review Drive transfer started: subjectId=${input.subjectId} fileCount=${files.length} totalBytes=${totalBytes}`,
+    );
+
+    const transferredFiles = await this.driveService.copyFilesToFolder(files, targetFolder.id, {
       onFileStarted: (file) => {
         if (input.transferId) this.progressService.fileStarted(input.transferId, file.filename);
       },
@@ -49,9 +38,12 @@ export class TransferService {
       },
     });
 
-    this.logger.log(`Drive to MEGA transfer completed: subjectId=${input.subjectId} fileCount=${files.length}`);
+    this.logger.log(`Drive to review Drive transfer completed: subjectId=${input.subjectId} fileCount=${files.length}`);
     if (input.transferId) this.progressService.complete(input.transferId);
-    return transferredFiles;
+    return {
+      folderUrl: targetFolder.url,
+      files: transferredFiles,
+    };
   }
 
   progress(transferId: string) {

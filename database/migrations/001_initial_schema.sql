@@ -224,7 +224,8 @@ CREATE TABLE IF NOT EXISTS subject_transfer_files (
   subject_id integer NOT NULL REFERENCES materias(id) ON DELETE CASCADE,
   file_name text NOT NULL,
   file_path text[] NOT NULL DEFAULT '{}',
-  mega_url text NOT NULL,
+  drive_file_id text NOT NULL,
+  drive_url text NOT NULL,
   size_bytes bigint,
   mime_type text,
   created_at timestamptz NOT NULL DEFAULT now()

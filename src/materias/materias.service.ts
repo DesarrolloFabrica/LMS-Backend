@@ -34,7 +34,7 @@ import { SubjectTransferFile } from "@/materias/models/subject-transfer-file.mod
 import { Subject } from "@/materias/models/subject.model";
 import { NotificationLog } from "@/notifications/models/notification-log.model";
 import { NotificationsService } from "@/notifications/notifications.service";
-import { DriveService, DriveTransferFile } from "@/transfers/drive.service";
+import { DriveService } from "@/transfers/drive.service";
 import { TransferService } from "@/transfers/transfer.service";
 import { User } from "@/users/models/user.model";
 
@@ -147,12 +147,13 @@ export class MateriasService {
     });
 
     try {
-      const transferredFiles = await this.transferService.copyDriveFolderToMega({
+      const transferResult = await this.transferService.copyDriveFolderToReviewDrive({
         driveFolderUrl: subject.driveFolderUrl,
         subjectId: subject.id,
         subjectName: subject.name,
         transferId: dto.transferId,
       });
+      const transferredFiles = transferResult.files;
       await this.subjectTransferFileModel.bulkCreate(
         transferredFiles.map(
           (file) =>
@@ -160,27 +161,29 @@ export class MateriasService {
               subjectId: subject.id,
               fileName: file.fileName,
               filePath: file.filePath,
-              megaUrl: file.megaUrl,
+              driveFileId: file.driveFileId,
+              driveUrl: file.driveUrl,
               sizeBytes: file.sizeBytes ?? null,
               mimeType: file.mimeType ?? null,
             }) as SubjectTransferFile,
         ),
       );
-      await subject.update({ cdigitalUrl: transferredFiles[0]?.megaUrl ?? null });
+      await subject.update({ cdigitalUrl: transferResult.folderUrl });
       await this.subjectTimelineEventModel.create({
         subjectId: subject.id,
         eventType: "TRANSFER_COMPLETED",
-        title: "Material transferido a MEGA",
+        title: "Material copiado al Drive de revision",
         description: `${transferredFiles.length} archivo(s) quedaron disponibles para revision.`,
         actorUserId: user.sub,
         metadata: {
           fileCount: transferredFiles.length,
           totalBytes: transferredFiles.reduce((sum, file) => sum + Number(file.sizeBytes ?? 0), 0),
+          destinationFolderUrl: transferResult.folderUrl,
         },
       } as Partial<SubjectTimelineEvent> as SubjectTimelineEvent);
       const actor = await this.getUserOrFail(user.sub);
       await this.notificationsService.logSubjectCreated(subject, actor);
-      this.logger.log(`Materia MEGA files generated: subjectId=${subject.id} fileCount=${transferredFiles.length}`);
+      this.logger.log(`Materia review Drive files generated: subjectId=${subject.id} fileCount=${transferredFiles.length}`);
       return this.findOne(subject.id, user);
     } catch (error) {
       if (dto.transferId) {
@@ -498,10 +501,9 @@ export class MateriasService {
 
       if (dto.newStatus === SubjectStatus.APROBADO) {
         const cdigitalUrl = dto.cdigitalUrl?.trim() ?? subject.cdigitalUrl?.trim();
-        if (!cdigitalUrl) {
-          throw new BadRequestException("MEGA URL is required to approve the subject");
+        if (cdigitalUrl) {
+          patch.cdigitalUrl = cdigitalUrl;
         }
-        patch.cdigitalUrl = cdigitalUrl;
         patch.completedAt = new Date();
       } else if (dto.newStatus === SubjectStatus.PENDIENTE) {
         patch.completedAt = null;
@@ -682,7 +684,7 @@ export class MateriasService {
       entries.push({
         id: `transfer-summary-${subject.id}`,
         type: "TRANSFER_COMPLETED",
-        title: "Material transferido a MEGA",
+        title: "Material copiado al Drive de revision",
         description: `${transferFiles.length} archivo(s) quedaron disponibles para revision.`,
         actor: this.timelineActor(subject.createdBy),
         createdAt: transferUploadedAt,
@@ -719,8 +721,7 @@ export class MateriasService {
     });
     if (!storedFile) throw new NotFoundException("Transfer file not found");
 
-    const driveFile = await this.findDriveFileForStoredFile(subject, storedFile);
-    const download = await this.driveService.download(driveFile);
+    const download = await this.driveService.downloadById(storedFile);
     const filename = this.safeDownloadName(download.filename);
 
     if (inline && this.isOfficePreviewFile(filename)) {
@@ -745,9 +746,15 @@ export class MateriasService {
 
   async downloadZip(id: number, user: AuthUser, response: Response) {
     const subject = await this.findOne(id, user);
-    const files = await this.driveService.listFilesFromFolderUrl(subject.driveFolderUrl);
+    const files = await this.subjectTransferFileModel.findAll({
+      where: { subjectId: id },
+      order: [
+        ["filePath", "ASC"],
+        ["fileName", "ASC"],
+      ],
+    });
     if (files.length === 0) {
-      throw new BadRequestException("Drive folder has no downloadable files");
+      throw new BadRequestException("Review Drive folder has no downloadable files");
     }
 
     const archive = archiver("zip", {
@@ -769,7 +776,7 @@ export class MateriasService {
     archive.pipe(response);
 
     for (const file of files) {
-      const download = await this.driveService.download(file);
+      const download = await this.driveService.downloadById(file);
       archive.append(download.stream, { name: this.zipPath(file, download.filename) });
     }
 
@@ -1051,20 +1058,8 @@ export class MateriasService {
     this.logger.warn(`Materia creation rolled back after transfer failure: subjectId=${subjectId}`);
   }
 
-  private async findDriveFileForStoredFile(subject: Subject, storedFile: SubjectTransferFile) {
-    const driveFiles = await this.driveService.listFilesFromFolderUrl(subject.driveFolderUrl);
-    const match = driveFiles.find((file) =>
-      this.driveService.samePath(file.path, storedFile.filePath ?? []) &&
-      this.driveService.resolveDownloadFilename(file) === storedFile.fileName,
-    );
-    if (!match) {
-      throw new NotFoundException("Original Drive file could not be resolved for download");
-    }
-    return match;
-  }
-
-  private zipPath(file: DriveTransferFile, filename: string) {
-    return [...file.path, filename].map((part) => this.safeZipSegment(part)).join("/");
+  private zipPath(file: Pick<SubjectTransferFile, "filePath">, filename: string) {
+    return [...(file.filePath ?? []), filename].map((part) => this.safeZipSegment(part)).join("/");
   }
 
   private safeZipSegment(value: string) {
