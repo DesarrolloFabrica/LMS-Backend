@@ -216,6 +216,8 @@ jobs:
             --service-account=${{ env.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}
             --add-cloudsql-instances=${{ env.CLOUD_SQL_INSTANCE }}
             --timeout=3600
+          env_vars_update_strategy: overwrite
+          secrets_update_strategy: overwrite
           env_vars: |
             NODE_ENV=production
             CORS_ORIGIN=${{ env.FRONTEND_URL }}
