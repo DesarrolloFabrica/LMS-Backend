@@ -1,22 +1,30 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { JWT } from "google-auth-library";
+import { OAuth2Client } from "google-auth-library";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
 
 const DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder";
 
-type DriveServiceAccount = {
-  client_email: string;
-  private_key: string;
-};
-
 type DriveFile = {
   id: string;
   name: string;
   mimeType: string;
   size?: string;
+  webViewLink?: string;
+  webContentLink?: string;
+};
+
+type OAuthClientSecretFile = {
+  web?: {
+    client_id?: string;
+    client_secret?: string;
+  };
+  installed?: {
+    client_id?: string;
+    client_secret?: string;
+  };
 };
 
 export type DriveTransferFile = {
@@ -25,6 +33,15 @@ export type DriveTransferFile = {
   path: string[];
   mimeType: string;
   size?: number;
+};
+
+export type DriveCopiedFile = {
+  driveFileId: string;
+  driveUrl: string;
+  fileName: string;
+  filePath: string[];
+  sizeBytes?: number;
+  mimeType?: string;
 };
 
 export type DriveDownload = {
@@ -37,15 +54,23 @@ export type DriveDownload = {
 @Injectable()
 export class DriveService {
   private readonly logger = new Logger(DriveService.name);
-  private readonly auth: JWT;
+  private readonly auth: OAuth2Client;
+  private readonly destinationRootFolderId: string;
 
   constructor(config: ConfigService) {
-    const serviceAccount = this.parseServiceAccount(config.getOrThrow<string>("drive.serviceAccountJson"));
-    this.auth = new JWT({
-      email: serviceAccount.client_email,
-      key: serviceAccount.private_key,
-      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    const clientId = config.getOrThrow<string>("drive.operatorClientId");
+    const clientSecret = this.resolveClientSecret(
+      config.getOrThrow<string>("drive.operatorClientSecret"),
+      clientId,
+    );
+    this.auth = new OAuth2Client({
+      clientId,
+      clientSecret,
     });
+    this.auth.setCredentials({
+      refresh_token: config.getOrThrow<string>("drive.operatorRefreshToken"),
+    });
+    this.destinationRootFolderId = config.getOrThrow<string>("drive.destinationRootFolderId");
   }
 
   async listFilesFromFolderUrl(folderUrl: string) {
@@ -56,27 +81,82 @@ export class DriveService {
     return files;
   }
 
-  async download(file: DriveTransferFile): Promise<DriveDownload> {
-    const exportTarget = this.exportTarget(file);
+  async createDestinationFolder(folderName: string) {
+    const folder = await this.createFolder(this.destinationRootFolderId, folderName);
+    return {
+      id: folder.id,
+      url: folder.webViewLink ?? this.driveFileUrl(folder.id),
+    };
+  }
+
+  async copyFilesToFolder(
+    files: DriveTransferFile[],
+    targetFolderId: string,
+    options: {
+      onFileStarted?: (file: { filename: string; size?: number }, index: number) => void;
+      onFileProgress?: (transferredBytes: number) => void;
+      onFileCompleted?: (transferredBytes: number) => void;
+    } = {},
+  ) {
+    let transferredBytes = 0;
+    const copiedFiles: DriveCopiedFile[] = [];
+
+    for (const [index, file] of files.entries()) {
+      const parentId = await this.ensureFolderPath(targetFolderId, file.path);
+      const filename = file.name;
+      options.onFileStarted?.({ filename, size: file.size }, index);
+      this.logger.log(`Drive copy started: ${index + 1}/${files.length} filename="${filename}" sizeBytes=${file.size ?? "unknown"}`);
+
+      const copied = await this.copyFile(file.id, parentId, filename);
+      transferredBytes += file.size ?? 0;
+      options.onFileProgress?.(transferredBytes);
+      copiedFiles.push({
+        driveFileId: copied.id,
+        driveUrl: copied.webViewLink ?? this.driveFileUrl(copied.id),
+        fileName: copied.name ?? filename,
+        filePath: file.path,
+        sizeBytes: copied.size ? Number(copied.size) : file.size,
+        mimeType: copied.mimeType ?? file.mimeType,
+      });
+      options.onFileCompleted?.(transferredBytes);
+      this.logger.log(`Drive copy completed: ${index + 1}/${files.length} filename="${filename}"`);
+    }
+
+    return copiedFiles;
+  }
+
+  async downloadById(file: { driveFileId?: string | null; fileName: string; mimeType?: string | null; sizeBytes?: number | null }): Promise<DriveDownload> {
+    if (!file.driveFileId) {
+      throw new Error("Transferred file does not have a destination Drive file ID");
+    }
+
+    const driveFile: DriveTransferFile = {
+      id: file.driveFileId,
+      name: file.fileName,
+      path: [],
+      mimeType: file.mimeType ?? "application/octet-stream",
+      size: file.sizeBytes ?? undefined,
+    };
+    const exportTarget = this.exportTarget(driveFile);
     const url = exportTarget
-      ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}/export?mimeType=${encodeURIComponent(exportTarget.mimeType)}`
-      : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?alt=media&supportsAllDrives=true`;
+      ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.driveFileId)}/export?mimeType=${encodeURIComponent(exportTarget.mimeType)}`
+      : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.driveFileId)}?alt=media&supportsAllDrives=true`;
 
     const response = await fetch(url, {
       headers: await this.authHeaders(),
     });
 
     if (!response.ok || !response.body) {
-      throw new Error(`Drive download failed for fileId=${file.id} status=${response.status}`);
+      throw new Error(`Drive download failed for fileId=${file.driveFileId} status=${response.status}`);
     }
 
-    const filename = this.resolveDownloadFilename(file);
+    const filename = this.resolveDownloadFilename(driveFile);
     const responseSize = Number(response.headers.get("content-length"));
-    const size = file.size ?? (Number.isNaN(responseSize) ? undefined : responseSize);
+    const size = driveFile.size ?? (Number.isNaN(responseSize) ? undefined : responseSize);
 
     return {
       filename,
-      mimeType: exportTarget?.mimeType ?? file.mimeType,
+      mimeType: exportTarget?.mimeType ?? driveFile.mimeType,
       stream: Readable.fromWeb(response.body as never),
       size,
     };
@@ -132,13 +212,90 @@ export class DriveService {
     } while (pageToken);
   }
 
+  private async ensureFolderPath(rootFolderId: string, path: string[]) {
+    let currentFolderId = rootFolderId;
+    for (const folderName of path) {
+      currentFolderId = (await this.findOrCreateFolder(currentFolderId, folderName)).id;
+    }
+    return currentFolderId;
+  }
+
+  private async findOrCreateFolder(parentFolderId: string, folderName: string) {
+    const existing = await this.findChildFolder(parentFolderId, folderName);
+    return existing ?? this.createFolder(parentFolderId, folderName);
+  }
+
+  private async findChildFolder(parentFolderId: string, folderName: string) {
+    const params = new URLSearchParams({
+      q: `'${parentFolderId}' in parents and mimeType='${DRIVE_FOLDER_MIME}' and name='${this.escapeDriveQuery(folderName)}' and trashed=false`,
+      fields: "files(id,name,mimeType,webViewLink)",
+      pageSize: "1",
+      supportsAllDrives: "true",
+      includeItemsFromAllDrives: "true",
+    });
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+      headers: await this.authHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Drive folder lookup failed for parentId=${parentFolderId} status=${response.status}`);
+    }
+
+    const payload = (await response.json()) as { files?: DriveFile[] };
+    return payload.files?.[0] ?? null;
+  }
+
+  private async createFolder(parentFolderId: string, folderName: string) {
+    const response = await fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,mimeType,webViewLink", {
+      method: "POST",
+      headers: {
+        ...(await this.authHeaders()),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: folderName,
+        mimeType: DRIVE_FOLDER_MIME,
+        parents: [parentFolderId],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Drive folder creation failed for parentId=${parentFolderId} status=${response.status}`);
+    }
+
+    return (await response.json()) as DriveFile;
+  }
+
+  private async copyFile(fileId: string, parentFolderId: string, filename: string) {
+    const response = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/copy?supportsAllDrives=true&fields=id,name,mimeType,size,webViewLink,webContentLink`,
+      {
+        method: "POST",
+        headers: {
+          ...(await this.authHeaders()),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: filename,
+          parents: [parentFolderId],
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Drive copy failed for fileId=${fileId} status=${response.status}`);
+    }
+
+    return (await response.json()) as DriveFile;
+  }
+
   private async authHeaders() {
-    const { access_token: accessToken } = await this.auth.authorize();
-    if (!accessToken) {
+    const { token } = await this.auth.getAccessToken();
+    if (!token) {
       throw new Error("Google Drive access token could not be resolved");
     }
 
-    return { Authorization: `Bearer ${accessToken}` };
+    return { Authorization: `Bearer ${token}` };
   }
 
   private extractFolderId(url: string) {
@@ -149,29 +306,6 @@ export class DriveService {
     }
 
     throw new Error("Drive URL must be a folder URL");
-  }
-
-  private parseServiceAccount(raw: string): DriveServiceAccount {
-    const value = raw.trim();
-    const json = value.startsWith("{") ? value : this.readServiceAccountFile(value);
-    const parsed = JSON.parse(json) as Partial<DriveServiceAccount>;
-    if (!parsed.client_email || !parsed.private_key) {
-      throw new Error("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON must include client_email and private_key");
-    }
-
-    return {
-      client_email: parsed.client_email,
-      private_key: parsed.private_key.replace(/\\n/g, "\n"),
-    };
-  }
-
-  private readServiceAccountFile(filePath: string) {
-    const resolvedPath = resolve(process.cwd(), filePath);
-    if (!existsSync(resolvedPath)) {
-      throw new Error("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON must be valid JSON or a readable local JSON file path");
-    }
-
-    return readFileSync(resolvedPath, "utf8");
   }
 
   private exportTarget(file: DriveTransferFile) {
@@ -188,14 +322,49 @@ export class DriveService {
       "application/vnd.google-apps.drawing": { mimeType: "image/png", extension: ".png" },
     };
 
-    const target = targets[file.mimeType];
-    if (!target && file.mimeType.startsWith("application/vnd.google-apps.")) {
-      this.logger.warn(`Skipping unsupported Google Workspace file export: fileId=${file.id} mimeType=${file.mimeType}`);
-    }
-    return target;
+    return targets[file.mimeType];
   }
 
   private withExtension(filename: string, extension: string) {
     return filename.toLowerCase().endsWith(extension) ? filename : `${filename}${extension}`;
+  }
+
+  private driveFileUrl(fileId: string) {
+    return `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`;
+  }
+
+  private escapeDriveQuery(value: string) {
+    return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  }
+
+  private resolveClientSecret(rawSecret: string, expectedClientId: string) {
+    const value = rawSecret.trim();
+    if (!value) {
+      throw new Error("GOOGLE_DRIVE_OPERATOR_CLIENT_SECRET cannot be empty");
+    }
+
+    if (value.startsWith("{")) {
+      return this.clientSecretFromJson(value, expectedClientId);
+    }
+
+    const resolvedPath = resolve(process.cwd(), value);
+    if (existsSync(resolvedPath)) {
+      return this.clientSecretFromJson(readFileSync(resolvedPath, "utf8"), expectedClientId);
+    }
+
+    return value;
+  }
+
+  private clientSecretFromJson(rawJson: string, expectedClientId: string) {
+    const parsed = JSON.parse(rawJson) as OAuthClientSecretFile;
+    const credentials = parsed.web ?? parsed.installed;
+    if (!credentials?.client_secret) {
+      throw new Error("Google OAuth client secret JSON must include web.client_secret or installed.client_secret");
+    }
+    if (credentials.client_id && credentials.client_id !== expectedClientId) {
+      throw new Error("Google OAuth client secret JSON does not match GOOGLE_DRIVE_OPERATOR_CLIENT_ID");
+    }
+
+    return credentials.client_secret;
   }
 }

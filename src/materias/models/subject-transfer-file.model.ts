@@ -21,8 +21,11 @@ export class SubjectTransferFile extends Model<SubjectTransferFile> {
   @Column({ type: DataType.ARRAY(DataType.TEXT), allowNull: false, defaultValue: [] })
   declare filePath: string[];
 
+  @Column({ type: DataType.TEXT, allowNull: true })
+  declare driveFileId?: string | null;
+
   @Column({ type: DataType.TEXT, allowNull: false })
-  declare megaUrl: string;
+  declare driveUrl: string;
 
   @Column({ type: DataType.BIGINT, allowNull: true })
   declare sizeBytes?: number | null;

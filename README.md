@@ -8,6 +8,7 @@ Backend NestJS para la plataforma de control operativo de cargue academico LMS.
 - Sequelize + sequelize-typescript
 - PostgreSQL
 - Google Identity Services
+- Google Drive API con OAuth de usuario operador
 - JWT interno en cookie HTTP-only
 - Nodemailer para notificaciones SMTP
 
@@ -90,10 +91,37 @@ SESSION_COOKIE_SECURE=true
 SESSION_COOKIE_SAME_SITE=none
 GOOGLE_CLIENT_ID=TU_GOOGLE_CLIENT_ID
 GOOGLE_ALLOWED_DOMAIN=cun.edu.co
+GOOGLE_DRIVE_OPERATOR_CLIENT_ID=TU_OAUTH_CLIENT_ID_DE_DRIVE
+GOOGLE_DRIVE_OPERATOR_CLIENT_SECRET=JSON_O_SECRET_DEL_OAUTH_CLIENT_DE_DRIVE
+GOOGLE_DRIVE_OPERATOR_REFRESH_TOKEN=TU_REFRESH_TOKEN_DE_fabricadecontenidos
+GOOGLE_DRIVE_DESTINATION_ROOT_FOLDER_ID=ID_CARPETA_RAIZ_UNIDAD_REVISORES
 APP_BASE_URL=https://TU_FRONTEND_URL
 ```
 
 Si frontend y backend quedan bajo el mismo site, puedes evaluar `SESSION_COOKIE_SAME_SITE=lax`. Si quedan en dominios distintos, usa `none` con `SESSION_COOKIE_SECURE=true`.
+
+## Transferencia Drive a Drive
+
+Al crear una materia, el backend lee la carpeta Drive origen y copia el material a una carpeta nueva dentro de la unidad compartida de revision. La copia se hace con Google Drive API usando OAuth del usuario operador `fabricadecontenidos@cun.edu.co`; no se usa service account para esta operacion y no se expone la unidad compartida origen a los revisores.
+
+Variables de Drive:
+
+```env
+GOOGLE_DRIVE_OPERATOR_CLIENT_ID=
+GOOGLE_DRIVE_OPERATOR_CLIENT_SECRET=
+GOOGLE_DRIVE_OPERATOR_REFRESH_TOKEN=
+GOOGLE_DRIVE_DESTINATION_ROOT_FOLDER_ID=
+```
+
+La cuenta operadora debe tener acceso de lectura a la unidad origen y permisos para crear contenido en la carpeta raiz destino.
+
+`GOOGLE_DRIVE_OPERATOR_CLIENT_SECRET` acepta tres formatos:
+
+- el client secret plano, por ejemplo `GOCSPX-...`
+- el JSON completo descargado de Google Cloud
+- una ruta local al archivo JSON, por ejemplo `client_secret.json`
+
+En Cloud Run con Secret Manager, se recomienda guardar el JSON completo del OAuth client como secreto y exponerlo como variable de entorno `GOOGLE_DRIVE_OPERATOR_CLIENT_SECRET`. Cloud Run inyecta el valor del secreto, no el nombre del secreto.
 
 ## Endpoints principales
 
@@ -195,7 +223,8 @@ Configura secretos sensibles con Secret Manager o variables de Cloud Run, no en 
 - `node_modules/`, `dist/` y `*.tsbuildinfo` no deben subirse.
 - `JWT_SECRET` debe ser largo y unico en produccion.
 - `DB_SYNC=false` en produccion.
-- Aplicar `database/migrations/001_initial_schema.sql` en la base de Cloud SQL.
+- Aplicar las migraciones de `database/migrations/` en la base de Cloud SQL.
 - Configurar OAuth de Google con el dominio/URL final.
+- Configurar OAuth de Drive para `fabricadecontenidos@cun.edu.co` y la carpeta destino.
 - Configurar `CORS_ORIGIN` con la URL real del frontend.
 - Verificar `GET /api/health` despues del despliegue.
