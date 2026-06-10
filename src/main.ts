@@ -24,9 +24,13 @@ async function bootstrap() {
   );
 
   const port = config.getOrThrow<number>("port");
-  await app.listen(port);
+  await app.listen(port, "0.0.0.0");
   logger.log(`Carga LMS backend running on port ${port}`);
   logger.log(`CORS enabled for ${allowedOrigins.length} origin(s)`);
 }
 
-void bootstrap();
+bootstrap().catch((error) => {
+  const logger = new Logger("Bootstrap");
+  logger.error("Carga LMS backend failed to start", error instanceof Error ? error.stack : String(error));
+  process.exit(1);
+});
